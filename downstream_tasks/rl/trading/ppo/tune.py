@@ -16,7 +16,7 @@ import torch
 from torch import nn
 import numpy as np
 import random
-import gym
+import gymnasium as gym
 import torch.optim as optim
 import time
 import json
@@ -520,12 +520,12 @@ def tune():
         make_env("Trading-v0", env_params=dict(env=deepcopy(train_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(cfg.num_envs)
-    ])
+    ], autoreset_mode="SameStep")
     val_envs = gym.vector.SyncVectorEnv([
         make_env("Trading-v0", env_params=dict(env=deepcopy(val_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(1)
-    ])
+    ], autoreset_mode="SameStep")
 
     def objective(trial):
 

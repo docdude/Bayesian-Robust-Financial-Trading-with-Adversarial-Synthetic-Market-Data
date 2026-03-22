@@ -96,12 +96,12 @@ def main(args):
     #     args.device = torch.device("cpu")
     #     print("Using CPU\n")
 
-    args.device = torch.device(f"cuda:{args.device}" if torch.cuda.is_available() else "cpu")
-    print("Using CUDA\n")
-    print(torch.cuda.is_available())
-    print(torch.cuda.current_device())
-    print(torch.cuda.get_device_name(torch.cuda.current_device()))
-    print(f"Using {args.device}\n")
+    if torch.cuda.is_available() and args.device != "cpu":
+        args.device = torch.device(f"cuda:{args.device}")
+        print(f"Using CUDA: {torch.cuda.get_device_name(torch.cuda.current_device())}\n")
+    else:
+        args.device = torch.device("cpu")
+        print("Using CPU\n")
 
     #########################
     # Load and preprocess data for model
@@ -115,8 +115,7 @@ def main(args):
     # data_path = "data/by_industry/20051.csv"
     # data_path = "data/by_industry/20050.csv"
     data_path = args.data_path
-    # preprossed_data_folder = args.preprossed_data_folder
-    preprossed_data_folder="/data3/hcxia/Adahist2/datasets/output_data"
+    preprossed_data_folder = os.path.join(os.path.abspath(os.path.join(code_dir, "..", "..")), "datasets", "output_data")
     print("Data path: ", data_path)
     # instead of processing the data each time, read the prossesed data from npy file
 
@@ -312,7 +311,7 @@ def main(args):
             if i==0:
                 all_in_one_generated_data=generated_data_denormalized[i,args.max_seq_len//2:,:]
                 all_in_one_generated_orginal_data=orginal_data_denormalized[i,args.max_seq_len//2:,:]
-                all_in_one_macro_data=
+                all_in_one_macro_data=None
             else:
                 all_in_one_generated_data=np.concatenate((all_in_one_generated_data,generated_data_denormalized[i,args.max_seq_len//2:,:]),axis=0)
                 all_in_one_generated_orginal_data=np.concatenate((all_in_one_generated_orginal_data,orginal_data_denormalized[i,args.max_seq_len//2:,:]),axis=0)
@@ -611,6 +610,11 @@ if __name__ == "__main__":
         "--data_path",
         default="",
         type=str)
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        default=False,
+        help='Resume training from latest checkpoints in output/<exp>/checkpoints/')
 
     args = parser.parse_args()
 

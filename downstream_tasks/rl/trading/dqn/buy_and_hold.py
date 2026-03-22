@@ -14,7 +14,7 @@ import torch
 import numpy as np
 import random
 from torch.utils.tensorboard import SummaryWriter
-import gym
+import gymnasium as gym
 import torch.optim as optim
 import time
 from torch.nn import functional as F
@@ -187,17 +187,17 @@ def main():
         make_env("Trading-v0", env_params=dict(env=deepcopy(train_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(1)
-    ])
+    ], autoreset_mode="SameStep")
     valid_envs = gym.vector.SyncVectorEnv([
         make_env("Trading-v0", env_params=dict(env=deepcopy(val_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(1)
-    ])
+    ], autoreset_mode="SameStep")
     test_envs = gym.vector.SyncVectorEnv([
         make_env("Trading-v0", env_params=dict(env=deepcopy(test_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(1)
-    ])
+    ], autoreset_mode="SameStep")
 
     buy_and_hold(cfg, train_envs, exp_path, name='train')
     buy_and_hold(cfg, valid_envs, exp_path, name='valid')
@@ -237,14 +237,15 @@ def buy_and_hold(cfg, envs, exp_path, name='valid'):
         # print (666, t)
         actions = []
         for env in envs.envs:
-            if env.timestamp_index + 1 < env.num_timestamps - 1:
+            inner = env.env if hasattr(env, 'env') else env
+            if inner.timestamp_index + 1 < inner.num_timestamps - 1:
                 actions.append(2)
             else:
                 actions.append(1)
         next_obs, reward, done, truncted, info = envs.step(actions)
         record_info = info
         if 'final_info' in info:
-            record_info = {key: np.array([item[key] for item in info['final_info']]) for key in info['final_info'][0].keys()}
+            record_info = info['final_info']
         rets.append(record_info["ret"])
         trading_records["timestamp"].append(record_info["timestamp"])
         trading_records["value"].append(record_info["value"])

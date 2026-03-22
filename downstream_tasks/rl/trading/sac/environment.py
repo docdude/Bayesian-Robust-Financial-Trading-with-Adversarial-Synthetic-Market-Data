@@ -5,7 +5,7 @@ import numpy as np
 from typing import List, Any
 from sklearn.preprocessing import StandardScaler
 import random
-import gym
+import gymnasium as gym
 import sys
 from pathlib import Path
 
@@ -18,6 +18,8 @@ from downstream_tasks.dataset import AugmentatedDatasetStocks as Dataset
 
 
 class EnvironmentRET(gym.Env):
+    metadata = {"render_modes": []}
+
     def __init__(self,
                  mode: str = "train",
                  dataset: Any = None,

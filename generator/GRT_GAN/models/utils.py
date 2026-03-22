@@ -17,17 +17,45 @@ from models.dataset import TimeGANDataset
 
 import pandas as pd
 
+def _save_checkpoint(model, args, phase, epoch):
+    """Save a training checkpoint."""
+    ckpt_dir = os.path.join(args.model_path, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    ckpt_path = os.path.join(ckpt_dir, f"{phase}_epoch{epoch}.pt")
+    state = model.module.state_dict() if isinstance(model, nn.DataParallel) else model.state_dict()
+    torch.save(state, ckpt_path)
+    print(f"\nCheckpoint saved: {ckpt_path}")
+
+
+def _find_latest_checkpoint(ckpt_dir, phase):
+    """Find the latest checkpoint for a given phase."""
+    if not os.path.exists(ckpt_dir):
+        return None, 0
+    import re
+    best_epoch = 0
+    best_path = None
+    for f in os.listdir(ckpt_dir):
+        m = re.match(rf"{phase}_epoch(\d+)\.pt", f)
+        if m:
+            ep = int(m.group(1))
+            if ep > best_epoch:
+                best_epoch = ep
+                best_path = os.path.join(ckpt_dir, f)
+    return best_path, best_epoch
+
+
 def embedding_trainer(
     model: torch.nn.Module, 
     dataloader: torch.utils.data.DataLoader, 
     e_opt: torch.optim.Optimizer, 
     r_opt: torch.optim.Optimizer, 
     args: Dict, 
-    writer: Union[torch.utils.tensorboard.SummaryWriter, type(None)]=None
+    writer: Union[torch.utils.tensorboard.SummaryWriter, type(None)]=None,
+    start_epoch: int = 0
 ) -> None:
     """The training loop for the embedding and recovery functions
     """  
-    logger = trange(args.emb_epochs, desc=f"Epoch: 0, Loss: 0")
+    logger = trange(start_epoch, args.emb_epochs, desc=f"Epoch: {start_epoch}, Loss: 0")
     for epoch in logger:   
         for X_mb, T_mb, M_mb in dataloader:
             # Reset gradients
@@ -59,6 +87,8 @@ def embedding_trainer(
                 epoch
             )
             writer.flush()
+        if (epoch + 1) % 50 == 0:
+            _save_checkpoint(model, args, "emb", epoch + 1)
 
 def supervisor_trainer(
     model: torch.nn.Module, 
@@ -66,11 +96,12 @@ def supervisor_trainer(
     s_opt: torch.optim.Optimizer, 
     g_opt: torch.optim.Optimizer, 
     args: Dict, 
-    writer: Union[torch.utils.tensorboard.SummaryWriter, type(None)]=None
+    writer: Union[torch.utils.tensorboard.SummaryWriter, type(None)]=None,
+    start_epoch: int = 0
 ) -> None:
     """The training loop for the supervisor function
     """
-    logger = trange(args.sup_epochs, desc=f"Epoch: 0, Loss: 0")
+    logger = trange(start_epoch, args.sup_epochs, desc=f"Epoch: {start_epoch}, Loss: 0")
     for epoch in logger:
         for X_mb, T_mb, M_mb in dataloader:
             # Reset gradients
@@ -97,6 +128,8 @@ def supervisor_trainer(
                 epoch
             )
             writer.flush()
+        if (epoch + 1) % 50 == 0:
+            _save_checkpoint(model, args, "sup", epoch + 1)
 
 def joint_trainer(
     model: torch.nn.Module, 
@@ -107,13 +140,14 @@ def joint_trainer(
     g_opt: torch.optim.Optimizer, 
     d_opt: torch.optim.Optimizer, 
     args: Dict, 
-    writer: Union[torch.utils.tensorboard.SummaryWriter, type(None)]=None, 
+    writer: Union[torch.utils.tensorboard.SummaryWriter, type(None)]=None,
+    start_epoch: int = 0,
 ) -> None:
     """The training loop for training the model altogether
     """
     logger = trange(
-        args.gan_epochs, 
-        desc=f"Epoch: 0, E_loss: 0, G_loss: 0, D_loss: 0"
+        start_epoch, args.gan_epochs, 
+        desc=f"Epoch: {start_epoch}, E_loss: 0, G_loss: 0, D_loss: 0"
     )
     
     for epoch in logger:
@@ -208,6 +242,8 @@ def joint_trainer(
                 epoch
             )
             writer.flush()
+        if (epoch + 1) % 50 == 0:
+            _save_checkpoint(model, args, "gan", epoch + 1)
 
 def timegan_trainer(model, data, time,mask, args):
     """The training procedure for TimeGAN
@@ -262,38 +298,77 @@ def timegan_trainer(model, data, time,mask, args):
     # TensorBoard writer
     writer = SummaryWriter(os.path.join(f"tensorboard/{args.exp}"))
 
-    print("\nStart Embedding Network Training")
-    embedding_trainer(
-        model=model, 
-        dataloader=dataloader, 
-        e_opt=e_opt, 
-        r_opt=r_opt, 
-        args=args, 
-        writer=writer
-    )
+    # --- Resume logic: detect existing checkpoints ---
+    ckpt_dir = os.path.join(args.model_path, "checkpoints")
+    resume = getattr(args, 'resume', False)
 
-    print("\nStart Training with Supervised Loss Only")
-    supervisor_trainer(
-        model=model,
-        dataloader=dataloader,
-        s_opt=s_opt,
-        g_opt=g_opt,
-        args=args,
-        writer=writer
-    )
+    emb_ckpt_path, emb_ckpt_epoch = (None, 0)
+    sup_ckpt_path, sup_ckpt_epoch = (None, 0)
+    gan_ckpt_path, gan_ckpt_epoch = (None, 0)
+    if resume:
+        emb_ckpt_path, emb_ckpt_epoch = _find_latest_checkpoint(ckpt_dir, "emb")
+        sup_ckpt_path, sup_ckpt_epoch = _find_latest_checkpoint(ckpt_dir, "sup")
+        gan_ckpt_path, gan_ckpt_epoch = _find_latest_checkpoint(ckpt_dir, "gan")
+        # Load the most advanced checkpoint into the model
+        load_path = gan_ckpt_path or sup_ckpt_path or emb_ckpt_path
+        if load_path:
+            print(f"\nResuming from checkpoint: {load_path}")
+            state = torch.load(load_path, map_location=args.device)
+            if isinstance(model, nn.DataParallel):
+                model.module.load_state_dict(state)
+            else:
+                model.load_state_dict(state)
 
-    print("\nStart Joint Training")
-    joint_trainer(
-        model=model,
-        dataloader=dataloader,
-        e_opt=e_opt,
-        r_opt=r_opt,
-        s_opt=s_opt,
-        g_opt=g_opt,
-        d_opt=d_opt,
-        args=args,
-        writer=writer,
-    )
+    # Phase 1: Embedding
+    if resume and emb_ckpt_epoch >= args.emb_epochs:
+        print(f"\nSkipping Embedding Training (checkpoint at epoch {emb_ckpt_epoch})")
+    else:
+        emb_start = emb_ckpt_epoch if resume and emb_ckpt_epoch > 0 else 0
+        print(f"\nStart Embedding Network Training (from epoch {emb_start})")
+        embedding_trainer(
+            model=model, 
+            dataloader=dataloader, 
+            e_opt=e_opt, 
+            r_opt=r_opt, 
+            args=args, 
+            writer=writer,
+            start_epoch=emb_start
+        )
+
+    # Phase 2: Supervisor
+    if resume and sup_ckpt_epoch >= args.sup_epochs:
+        print(f"\nSkipping Supervisor Training (checkpoint at epoch {sup_ckpt_epoch})")
+    else:
+        sup_start = sup_ckpt_epoch if resume and sup_ckpt_epoch > 0 else 0
+        print(f"\nStart Training with Supervised Loss Only (from epoch {sup_start})")
+        supervisor_trainer(
+            model=model,
+            dataloader=dataloader,
+            s_opt=s_opt,
+            g_opt=g_opt,
+            args=args,
+            writer=writer,
+            start_epoch=sup_start
+        )
+
+    # Phase 3: Joint (adversarial)
+    if resume and gan_ckpt_epoch >= args.gan_epochs:
+        print(f"\nSkipping Joint Training (checkpoint at epoch {gan_ckpt_epoch})")
+    else:
+        gan_start = gan_ckpt_epoch if resume and gan_ckpt_epoch > 0 else 0
+        print(f"\nStart Joint Training (from epoch {gan_start})")
+        joint_trainer(
+            model=model,
+            dataloader=dataloader,
+            e_opt=e_opt,
+            r_opt=r_opt,
+            s_opt=s_opt,
+            g_opt=g_opt,
+            d_opt=d_opt,
+            args=args,
+            writer=writer,
+            start_epoch=gan_start,
+        )
 
     # Save model, args, and hyperparameters
     # torch.save(args, f"{args.model_path}/args.pickle")

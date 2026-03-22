@@ -4,7 +4,7 @@ from module.registry import DOWNLOADER
 from module.downloader.custom import Downloader
 from tqdm.auto import tqdm
 import time
-import signal
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pandas_market_calendars import get_calendar
 from urllib.request import urlopen
 import certifi
@@ -12,11 +12,6 @@ import json
 from dotenv import load_dotenv
 
 load_dotenv(verbose=True)
-
-class TimeoutException(Exception):
-    pass
-def timeout_handler(signum, frame):
-    raise TimeoutException("Time out")
 
 def get_jsonparsed_data(url):
     response = urlopen(url, cafile=certifi.where())
@@ -105,20 +100,18 @@ class FMPEconomicDownloader(Downloader):
 
                     request_url = self.request_url.format(indicator, self.token)
 
-                    signal.signal(signal.SIGALRM, timeout_handler)
-                    signal.alarm(60)
-
                     try:
                         time.sleep(self.delay)
-                        aggs = get_jsonparsed_data(request_url)
-                        signal.alarm(0)
-                    except TimeoutException:
-                        print("Time out")
+                        with ThreadPoolExecutor(max_workers=1) as executor:
+                            future = executor.submit(get_jsonparsed_data, request_url)
+                            aggs = future.result(timeout=60)
+                    except (FuturesTimeoutError, Exception) as e:
+                        print(f"Time out or error: {e}")
                         aggs = []
 
                     if len(aggs) == 0:
                         with open(self.log_path, "a") as op:
-                            op.write("{},{}\n".format(stock, indicator))
+                            op.write("{}\n".format(indicator))
                         continue
 
                     for a in aggs:

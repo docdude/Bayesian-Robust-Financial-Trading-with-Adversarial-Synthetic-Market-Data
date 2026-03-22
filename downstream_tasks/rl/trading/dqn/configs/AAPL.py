@@ -5,35 +5,56 @@ save_path = "saved_model"
 level = "day"
 select_stock = "AAPL"
 
-# setting parameters [do not change]
-train_start_date = "2022-06-01"
-train_end_date = "2023-06-01"
-valid_start_date = "2023-06-01"
-valid_end_date = "2024-01-01"
+# date splits
+train_start_date = "2000-01-01"
+train_end_date = "2017-12-31"
+valid_start_date = "2018-01-01"
+valid_end_date = "2020-12-31"
+test_start_date = "2021-01-01"
+test_end_date = "2023-12-31"
 timestamps = 30
 num_features = 153  # num features name (150) + num temporals name (3)
 temporals_name = ['day', 'weekday', 'month']
 embed_dim = 64
 depth = 1  # 2 mlp layers
-initial_amount = 1e4
+initial_amount = 1e7
 transaction_cost_pct = 1e-3
+position_lowerbound = -1
 
-# training parameters (adjust mainly)
-policy_learning_rate = 2.5e-4  # ( 1e-6, 2.5e-4)     optuna选
+# training parameters
+policy_learning_rate = 2.5e-4
 start_e = 1.0
 end_e = 0.05
 num_envs = 4
-total_timesteps = int(1e6)  # int(2e5)
+total_timesteps = int(1e6)
 check_steps = int(10000)
 exploration_fraction = 0.5
-learning_starts = int(10000)  # 1000
+learning_starts = int(10000)
 train_frequency = 10
 batch_size = 128
 gamma = 0.99
-buffer_size = 10000  # 1000
-target_network_frequency = 500  # 250
+buffer_size = 10000
+target_network_frequency = 500
 tau = 1.0
 seed = 10
+
+# data augmentation (off for baseline)
+use_data_augmentation = False
+augmentation_method = 'generator_adv_agent'
+augmentation_rate = 0.1
+epsilon = 0.1
+iterations = 2
+alpha = 0.05
+adv_training_length = 100
+adv_policy_learning_rate = 2.5e-4
+
+# NFSP
+use_nfsp = True
+nfsp_tau = 0.1
+
+# quantile belief
+use_quantile_belief = True
+quantile_heads = [0.05, 0.25, 0.5, 0.75, 0.95]
 
 transition = ["states", "actions", "rewards", "dones", "next_states"]
 transition_shape = dict(
@@ -47,7 +68,7 @@ transition_shape = dict(
 dataset = dict(
     root=root,
     data_path="datasets/processd_day_dj30/features",
-    stocks_path="configs/_asset_list_/exp_stocks.txt",
+    stocks_path="configs/_asset_list_/dj30.txt",
     features_name=[
         'open',
         'high',

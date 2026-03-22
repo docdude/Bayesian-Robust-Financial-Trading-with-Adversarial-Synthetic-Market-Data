@@ -304,12 +304,10 @@ class Processor():
 
             price_df = price_df.rename(columns=price_column_map)[["timestamp"] + price_columns]
 
-            price_df["timestamp"] = pd.to_datetime(price_df["timestamp"])
-            # print(f"price_df[timestamp]: {price_df['timestamp'].head()}")
-            # print(f"start_date: {start_date}")
-            # print(f"end_date: {end_date}")
+            price_df["timestamp"] = pd.to_datetime(price_df["timestamp"], utc=True)
             price_df = price_df[(price_df["timestamp"] >= start_date) & (price_df["timestamp"] < end_date)]
 
+            price_df["timestamp"] = price_df["timestamp"].dt.tz_localize(None)
             price_df = price_df.sort_values(by="timestamp")
 
             # # cast the [timestamp] column to string of "YYYY-MM-DD"

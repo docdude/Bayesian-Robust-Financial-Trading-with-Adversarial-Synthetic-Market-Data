@@ -1,14 +1,9 @@
 import random
 from typing import Any
 
-import gym
+import gymnasium as gym
 import numpy as np
-from gym import Wrapper, spaces
-from gym.envs.registration import register
-
-register(id="Trading-v0", entry_point="wrapper:EnvironmentWrapper")
-
-
+from gymnasium import Wrapper, spaces
 class EnvironmentWrapper(Wrapper):
     def __init__(self,
                  env: Any,
@@ -45,7 +40,7 @@ class EnvironmentWrapper(Wrapper):
         self.action_space.seed(seed)
         self.observation_space.seed(seed)
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         state, info = self.env.reset()
         return state, info
 
@@ -56,7 +51,7 @@ class EnvironmentWrapper(Wrapper):
 
 def make_env(env_id, env_params):
     def thunk():
-        env = gym.make(env_id, **env_params)
+        env = EnvironmentWrapper(**env_params)
         return env
 
     return thunk

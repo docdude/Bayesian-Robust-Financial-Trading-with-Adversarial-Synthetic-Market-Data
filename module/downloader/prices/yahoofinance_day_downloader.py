@@ -4,7 +4,7 @@ from tqdm.auto import tqdm
 from datetime import datetime, timedelta
 import time
 import yfinance as yf
-import signal
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dotenv import load_dotenv
 
 load_dotenv(verbose=True)
@@ -14,8 +14,6 @@ from module.utils.misc import generate_intervals
 
 class TimeoutException(Exception):
     pass
-def timeout_handler(signum, frame):
-    raise TimeoutException("Time out")
 
 @DOWNLOADER.register_module(force=True)
 class YahooFinanceDayPriceDownloader():
@@ -122,9 +120,10 @@ class YahooFinanceDayPriceDownloader():
                     signal.alarm(60)
 
                     try:
-                        chunk_df = yf.download(tickers=stock, start=start, end=end, interval="1d")
-                        signal.alarm(0)
-                    except TimeoutException:
+                        with ThreadPoolExecutor(max_workers=1) as _executor:
+                            _future = _executor.submit(yf.download, tickers=stock, start=start, end=end, interval="1d", auto_adjust=False, multi_level_index=False)
+                            chunk_df = _future.result(timeout=60)
+                    except (FuturesTimeoutError, TimeoutException):
                         print("Time out")
                         chunk_df = pd.DataFrame()
 

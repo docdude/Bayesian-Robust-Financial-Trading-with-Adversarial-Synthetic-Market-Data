@@ -10,7 +10,7 @@ def calculate_log_returns(data):
     """Calculate log returns for each column in the DataFrame."""
     data=np.log(data / data.shift(1))
     return data.dropna()
-def plot_tsne_time_series(data, window_size=21, perplexity=50, n_iter=2000, random_state=42, save_path=None,color_scheme="continuous"):
+def plot_tsne_time_series(data, window_size=21, perplexity=50, max_iter=2000, random_state=42, save_path=None,color_scheme="continuous"):
     """
     Plots a t-SNE visualization for a multivariate time-series dataset.
     """
@@ -37,7 +37,7 @@ def plot_tsne_time_series(data, window_size=21, perplexity=50, n_iter=2000, rand
     flattened_windows = np.array([window.flatten() for window in windows])
 
     # Apply t-SNE
-    tsne = TSNE(n_components=2, perplexity=perplexity, n_iter=n_iter, random_state=random_state)
+    tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=max_iter, random_state=random_state)
     tsne_results = tsne.fit_transform(flattened_windows)
 
     # # Convert to log returns
@@ -52,7 +52,7 @@ def plot_tsne_time_series(data, window_size=21, perplexity=50, n_iter=2000, rand
     #     windowed_data.append(normalized_window.flatten())
     # windowed_data = np.array(windowed_data)
     # # Apply t-SNE
-    # tsne = TSNE(n_components=2, perplexity=perplexity, n_iter=n_iter, random_state=random_state)
+    # tsne = TSNE(n_components=2, perplexity=perplexity, max_iter=max_iter, random_state=random_state)
     # tsne_results = tsne.fit_transform(windowed_data)
 
     # Create a figure and axes object for the plot
@@ -178,7 +178,7 @@ def plot_pca_time_series(data, window_size=30, n_components=2, random_state=42, 
         print("Plot saved at", save_path)
 
 
-def plot_dynamics(data, window_size=21, perplexity=50, n_iter=3000, random_state=42, save_path=None,
+def plot_dynamics(data, window_size=21, perplexity=50, max_iter=3000, random_state=42, save_path=None,
                   color_scheme="continuous"):
     """
     Plots a t-SNE visualization for a multivariate time-series dataset to show the relationship between
@@ -223,8 +223,8 @@ def plot_dynamics(data, window_size=21, perplexity=50, n_iter=3000, random_state
     windowed_Y = Y[window_size - 1:].values
 
     # Apply t-SNE to X and Y
-    tsne_X = TSNE(n_components=1, perplexity=perplexity, n_iter=n_iter, random_state=random_state).fit_transform(windowed_X)
-    tsne_Y = TSNE(n_components=1, perplexity=perplexity, n_iter=n_iter, random_state=random_state).fit_transform(
+    tsne_X = TSNE(n_components=1, perplexity=perplexity, max_iter=max_iter, random_state=random_state).fit_transform(windowed_X)
+    tsne_Y = TSNE(n_components=1, perplexity=perplexity, max_iter=max_iter, random_state=random_state).fit_transform(
         windowed_Y.reshape(-1, 1))
     # Create a figure for the plot
     fig, ax = plt.subplots(figsize=(12, 8))

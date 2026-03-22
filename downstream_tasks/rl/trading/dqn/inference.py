@@ -14,7 +14,7 @@ import torch
 import numpy as np
 import random
 from torch.utils.tensorboard import SummaryWriter
-import gym
+import gymnasium as gym
 import torch.optim as optim
 import time
 from torch.nn import functional as F
@@ -89,6 +89,7 @@ def parse_args():
              'is allowed.')
     parser.add_argument("--root", type=str, default=ROOT)
     parser.add_argument("--if_remove", action="store_true", default=False)
+    parser.add_argument("--checkpoint", type=int, default=None, help="checkpoint number to load (default: total_timesteps // check_steps)")
     args = parser.parse_args()
     return args
 
@@ -186,17 +187,17 @@ def main():
         make_env("Trading-v0", env_params=dict(env=deepcopy(train_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(1)
-    ])
+    ], autoreset_mode="SameStep")
     valid_envs = gym.vector.SyncVectorEnv([
         make_env("Trading-v0", env_params=dict(env=deepcopy(val_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(1)
-    ])
+    ], autoreset_mode="SameStep")
     test_envs = gym.vector.SyncVectorEnv([
         make_env("Trading-v0", env_params=dict(env=deepcopy(test_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(1)
-    ])
+    ], autoreset_mode="SameStep")
     
     quantile_heads_num = 0
     if cfg.use_quantile_belief:
@@ -214,7 +215,8 @@ def main():
                   quantile_heads_num=quantile_heads_num,
                   use_nfsp=cfg.use_nfsp)
     
-    agent.load_state_dict(torch.load(os.path.join(exp_path, cfg.save_path, "{}.pth".format(cfg.total_timesteps // cfg.check_steps)), map_location=device))
+    ckpt_num = args.checkpoint if hasattr(args, 'checkpoint') and args.checkpoint is not None else cfg.total_timesteps // cfg.check_steps
+    agent.load_state_dict(torch.load(os.path.join(exp_path, cfg.save_path, "{}.pth".format(ckpt_num)), map_location=device))
 
     validate_agent(cfg, agent, train_envs, device, cfg.total_timesteps, exp_path, name='train')
     validate_agent(cfg, agent, valid_envs, device, cfg.total_timesteps, exp_path, name='valid')
@@ -269,7 +271,11 @@ def validate_agent(cfg, agent, envs, device, global_step, exp_path, name='valid'
         next_obs, reward, done, truncted, info = envs.step(action.cpu().numpy())
         record_info = info
         if 'final_info' in info:
-            record_info = {key: np.array([item[key] for item in info['final_info']]) for key in info['final_info'][0].keys()}
+            fi = info['final_info']
+            if isinstance(fi, dict):
+                record_info = fi
+            else:
+                record_info = {key: np.array([item[key] for item in fi]) for key in fi[0].keys()}
         rets.append(record_info["ret"])
         trading_records["timestamp"].append(record_info["timestamp"])
         trading_records["value"].append(record_info["value"])
@@ -289,11 +295,19 @@ def validate_agent(cfg, agent, envs, device, global_step, exp_path, name='valid'
         next_done = torch.Tensor(done).to(device)
 
         if "final_info" in info:
-            print("val final_info", info["final_info"])
-            for info_item in info["final_info"]:
-                if info_item is not None:
-                    print(
-                        f"global_step={global_step}, total_return={info_item['total_return']}, total_profit = {info_item['total_profit']}")
+            fi = info["final_info"]
+            print("val final_info", fi)
+            if isinstance(fi, dict):
+                mask = fi.get('_total_return', np.ones(1, dtype=bool))
+                for i in range(len(mask)):
+                    if mask[i]:
+                        print(
+                            f"global_step={global_step}, total_return={fi['total_return'][i]}, total_profit = {fi['total_profit'][i]}")
+            else:
+                for info_item in fi:
+                    if info_item is not None:
+                        print(
+                            f"global_step={global_step}, total_return={info_item['total_return']}, total_profit = {info_item['total_profit']}")
             break
 
     rets = np.array(rets)

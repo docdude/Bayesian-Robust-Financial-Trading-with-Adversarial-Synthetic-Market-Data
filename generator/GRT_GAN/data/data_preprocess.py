@@ -612,8 +612,8 @@ def data_preprocess(
     # ori_data = ori_data_group_by_ticker.apply(lambda x: x.sort_values(by=['date'], ascending=True)).reset_index(drop=True)
 
     # Load the data
-    pv_projection={"Adj Close":"close","High":"high","Low":"low","Open":"open","Volume":"volume"}
-    selected_macro_path = "/data3/hcxia/Adahist2/generator/GRT_GAN/data/macro_list.txt"
+    pv_projection={"Close":"underlying_close","Adj Close":"close","High":"high","Low":"low","Open":"open","Volume":"volume"}
+    selected_macro_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macro_list.txt")
     with open(selected_macro_path, "r") as f:
         Macro_features = f.read().splitlines()
     print("Loading data...\n")
@@ -751,7 +751,7 @@ def data_preprocess(
     # do filling for the missing data
     reshaped_data = np.where(np.isnan(reshaped_data), np.nan, reshaped_data)
     for i in range(reshaped_data.shape[1]):
-        reshaped_data[:,i,:] = pd.DataFrame(reshaped_data[:,i,:]).fillna(method='bfill').fillna(method='ffill').values
+        reshaped_data[:,i,:] = pd.DataFrame(reshaped_data[:,i,:]).bfill().ffill().values
     
     # get the date range of the reshaped data, get the same date range for the macro data
     # left join the macro data with the reshaped data with the 'date' column
@@ -760,8 +760,8 @@ def data_preprocess(
     print("Number of unique date in the reshaped data:", len(reshaped_data_date))
     macro_data = macro_data[macro_data['date'].isin(reshaped_data_date)]
     # fill the missing data in the macro data
-    macro_data.fillna(method='bfill', inplace=True)
-    macro_data.fillna(method='ffill', inplace=True)
+    macro_data.bfill(inplace=True)
+    macro_data.ffill(inplace=True)
     # Print the shape of the resulting array
     print("Reshaped data shape:", reshaped_data.shape)
 
@@ -855,12 +855,26 @@ def data_preprocess(
             curr_pv_sample = new_ticker_data.iloc[i:i + max_seq_len][processed_pv_features_name].values
             history_pv_sample = new_ticker_data.iloc[i - max_seq_len:i][processed_pv_features_name].values
             curr_mask_sample = mask_matrix[i:i + max_seq_len, ticker_list.index(ticker), :]
+            history_mask_sample = mask_matrix[i - max_seq_len:i, ticker_list.index(ticker), :]
+
+            # Skip tickers whose history or current window has >10% NaN-filled data.
+            # Forward-filled NaN regions (e.g. pre-IPO stocks like CRM, V) produce
+            # near-zero std which causes explosive z-scores during normalization.
+            nan_frac_hist = history_mask_sample.any(axis=1).mean()
+            nan_frac_curr = curr_mask_sample.any(axis=1).mean()
+            if nan_frac_hist > 0.1 or nan_frac_curr > 0.1:
+                continue
 
             # Normalize the current pv data with the history data rolling window
             history_mean = history_pv_sample.mean(axis=0)
             history_std = history_pv_sample.std(axis=0)
+            # Guard against near-zero std from constant/fill regions
+            history_std = np.where(history_std < 1e-8, 1.0, history_std)
             curr_pv_sample_normalized = (curr_pv_sample - history_mean) / history_std
             history_pv_sample_normalized = (history_pv_sample - history_mean) / history_std
+            # Clip extreme z-scores as a safety net
+            curr_pv_sample_normalized = np.clip(curr_pv_sample_normalized, -10, 10)
+            history_pv_sample_normalized = np.clip(history_pv_sample_normalized, -10, 10)
 
 
 
@@ -922,6 +936,8 @@ def data_preprocess(
             output_transformation_params["original caj"].append(pv_caj)
 
         # Concatenate data from all ticker along the feature axis
+        if len(curr_pv_sample_list) == 0:
+            continue
         curr_pv_sample_concat = np.concatenate(curr_pv_sample_list, axis=1)
         history_pv_sample_concat = np.concatenate(history_pv_sample_list, axis=1)
         curr_mask_sample_concat = np.concatenate(curr_mask_sample_list, axis=1)

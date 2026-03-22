@@ -14,7 +14,7 @@ import torch
 import numpy as np
 import random
 from torch.utils.tensorboard import SummaryWriter
-import gym
+import gymnasium as gym
 import torch.optim as optim
 import time
 from torch.nn import functional as F
@@ -184,6 +184,7 @@ def parse_args():
              'is allowed.')
     parser.add_argument("--root", type=str, default=ROOT)
     parser.add_argument("--if_remove", action="store_true", default=False)
+    parser.add_argument("--resume", action="store_true", default=False, help="Resume from latest checkpoint")
     args = parser.parse_args()
     return args
 
@@ -275,12 +276,12 @@ def main():
         make_env("Trading-v0", env_params=dict(env=deepcopy(train_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(cfg.num_envs)
-    ])
+    ], autoreset_mode="SameStep")
     val_envs = gym.vector.SyncVectorEnv([
         make_env("Trading-v0", env_params=dict(env=deepcopy(val_env),
                                                transition_shape=cfg.transition_shape, seed=cfg.seed + i)) for i in
         range(1)
-    ])
+    ], autoreset_mode="SameStep")
     
     quantile_heads_num = 0
     if cfg.use_quantile_belief:
@@ -368,24 +369,42 @@ def main():
                                  type=transition_shape["rewards"]["type"])
 
     # init generator
-    if cfg.augmentation_method == 'generator_noise' or cfg.augmentation_method == 'generator_adv_agent':
-        model_path="generator/GRT_GAN/output/etf_6_120length"
+    if cfg.use_data_augmentation and (cfg.augmentation_method == 'generator_noise' or cfg.augmentation_method == 'generator_adv_agent'):
+        model_path = getattr(cfg, 'gan_model_path', "generator/GRT_GAN/output/dj30")
         ticker_name=cfg.select_stock
-        # /data3/hcxia/Adahist2/datasets
-        # /data3/hcxia/Adahist2/generator/GRT_GAN/models/API.py
-        # Set CUDA_LAUNCH_BLOCKING to 1
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-
-        # Verify the environment variable is set
-        print(f"CUDA_LAUNCH_BLOCKING={os.environ.get('CUDA_LAUNCH_BLOCKING')}")
-
-        os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
-        print(f"Using GPUs: {os.environ['CUDA_VISIBLE_DEVICES']}")
+        print(f"GAN model path: {model_path}")
         print(f"Using CUDA: {torch.cuda.is_available()}")
         generator=GeneratorAPI(model_path=model_path, ticker_name=ticker_name,obs_features=cfg.dataset.features_name,temporal_features=cfg.dataset.temporals_name)
     else:
         generator=None
+
+    # Resume from checkpoint if requested
+    resume_step = 0
+    if args.resume:
+        save_dir = os.path.join(exp_path, cfg.save_path)
+        if os.path.exists(save_dir):
+            ckpts = [f for f in os.listdir(save_dir) if f.endswith('.pth') and not f.endswith('_adv.pth')]
+            if ckpts:
+                latest_num = max(int(f.split('.')[0]) for f in ckpts)
+                ckpt_path = os.path.join(save_dir, f"{latest_num}.pth")
+                agent.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True))
+                resume_step = latest_num * cfg.check_steps
+                print(f"Resumed agent from {ckpt_path} at step {resume_step}")
+                adv_ckpt = os.path.join(save_dir, f"{latest_num}_adv.pth")
+                if adv_agent is not None and os.path.exists(adv_ckpt):
+                    adv_agent.load_state_dict(torch.load(adv_ckpt, map_location=device, weights_only=True))
+                    print(f"Resumed adv_agent from {adv_ckpt}")
+
+    # If training already completed, skip straight to final validation
+    if resume_step >= cfg.total_timesteps:
+        global_step = cfg.total_timesteps - 1
+        print(f"Training already completed ({resume_step} >= {cfg.total_timesteps}). Running final validation only.")
+        validate_agent(cfg, agent, val_envs, writer, device, global_step, exp_path)
+        train_envs.close()
+        val_envs.close()
+        writer.close()
+        return
 
     # TRY NOT TO MODIFY: start the game
     start_time = time.time()
@@ -399,7 +418,7 @@ def main():
     ticker_list=train_env.dataset.stocks
     scaler_ticker=scalers[ticker_list.index(cfg.select_stock)]
 
-    for global_step in range(cfg.total_timesteps):
+    for global_step in range(resume_step, cfg.total_timesteps):
         if cfg.use_data_augmentation and cfg.augmentation_method in ['adv_agent', 'generator_adv_agent']:
             obs_b[global_step % cfg.adv_training_length] = obs
         # ALGO LOGIC: put action logic here
@@ -443,19 +462,20 @@ def main():
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         if "final_info" in info:
-            print("final_info", info["final_info"])
-            for info_item in info["final_info"]:
-                if info_item is not None:
+            final_info = info["final_info"]
+            for idx in range(cfg.num_envs):
+                if final_info.get("_total_return", np.zeros(cfg.num_envs, dtype=bool))[idx]:
                     print(
-                        f"global_step={global_step}, total_return={info_item['total_return']}, total_profit = {info_item['total_profit']}")
-                    writer.add_scalar("charts/total_return", info_item["total_return"], global_step)
-                    writer.add_scalar("charts/total_profit", info_item["total_profit"], global_step)
+                        f"global_step={global_step}, total_return={final_info['total_return'][idx]}, total_profit = {final_info['total_profit'][idx]}")
+                    writer.add_scalar("charts/total_return", final_info["total_return"][idx], global_step)
+                    writer.add_scalar("charts/total_profit", final_info["total_profit"][idx], global_step)
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = info["final_observation"][idx]
+        if "final_observation" in info:
+            for idx, trunc in enumerate(truncations):
+                if trunc:
+                    real_next_obs[idx] = info["final_observation"][idx]
 
         rb.update((obs, actions, rewards, terminations, real_next_obs))
 
@@ -464,7 +484,7 @@ def main():
         timestamp = info["timestamp"]
 
         # ALGO LOGIC: training.
-        if global_step > cfg.learning_starts:
+        if global_step > cfg.learning_starts and rb.cur_size >= cfg.batch_size:
             if cfg.use_data_augmentation and cfg.augmentation_method in ['adv_agent', 'generator_adv_agent'] \
                 and (global_step + 1) % cfg.adv_training_length == 0:
                 compute_values(dones_b=dones_b, masks_b=masks_b, 
@@ -479,7 +499,7 @@ def main():
                 writer.add_scalar("losses/adv_obs_loss", loss_obs_adv.item(), global_step)
                 
             if global_step % cfg.train_frequency == 0:
-                if cfg.use_nfsp:
+                if cfg.use_nfsp and nfsp_rb.cur_size >= cfg.batch_size:
                     states, _ = nfsp_rb.sample(cfg.batch_size)
                     states = torch.tensor(states).to(device)
                     with torch.no_grad():
@@ -633,13 +653,13 @@ def validate_agent(cfg, agent, envs, writer, device, global_step, exp_path):
         next_done = torch.Tensor(done).to(device)
 
         if "final_info" in info:
-            print("val final_info", info["final_info"])
-            for info_item in info["final_info"]:
-                if info_item is not None:
+            final_info = info["final_info"]
+            for idx in range(1):
+                if final_info.get("_total_return", np.zeros(1, dtype=bool))[idx]:
                     print(
-                        f"global_step={global_step}, total_return={info_item['total_return']}, total_profit = {info_item['total_profit']}")
-                    writer.add_scalar("val/total_return", info_item["total_return"], global_step)
-                    writer.add_scalar("val/total_profit", info_item["total_profit"], global_step)
+                        f"global_step={global_step}, total_return={final_info['total_return'][idx]}, total_profit = {final_info['total_profit'][idx]}")
+                    writer.add_scalar("val/total_return", final_info["total_return"][idx], global_step)
+                    writer.add_scalar("val/total_profit", final_info["total_profit"][idx], global_step)
             break
 
     rets = np.array(rets)

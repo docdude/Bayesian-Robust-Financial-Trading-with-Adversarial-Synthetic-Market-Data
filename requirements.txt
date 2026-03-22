@@ -5,14 +5,13 @@ unstructured
 pandas
 tiktoken
 finnhub-python
-yfinance
+yfinance>=0.2.31
 pandas_market_calendars
 polygon-api-client
 mplfinance
 python-dotenv
-gym
+gymnasium
 pandas_ta
-scikit-learn-extra
 json5
 pyarrow
 fastparquet
@@ -26,7 +25,7 @@ statsmodels
 einops
 timm
 scikit-learn
-gym
+gymnasium
 tensorboard
 stable_baselines3
 datasets

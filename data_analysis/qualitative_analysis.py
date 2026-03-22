@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 from module.plots.qualitative_analysis import plot_tsne_time_series, plot_pca_time_series, plot_dynamics
 
-data_dir="../datasets"
+data_dir="datasets"
 workdir="workdir"
 plot_dir=os.path.join(workdir,"qualitative_analysis")
 import logging
@@ -50,8 +50,8 @@ def main():
                         else:
                             print(f"Skipping {file}")
                             continue
-                        print(f"Running t-SNE with perplexity = {perplexity} and n_iter = {n_iter}")
-                        plot_tsne_time_series(data=df,perplexity=perplexity, n_iter=n_iter, random_state=seed, save_path=save_path,color_scheme=mode)
+                        print(f"Running t-SNE with perplexity = {perplexity} and max_iter = {n_iter}")
+                        plot_tsne_time_series(data=df,perplexity=perplexity, max_iter=n_iter, random_state=seed, save_path=save_path,color_scheme=mode)
             except Exception as e:
                 logging.error(f"Error plotting {file}: {e}", exc_info=True)
 
@@ -83,8 +83,8 @@ def main():
                         else:
                             print(f"Skipping {file}")
                             continue
-                        print(f"Running t-SNE with perplexity = {perplexity} and n_iter = {n_iter}")
-                        plot_dynamics(data=df, perplexity=perplexity, n_iter=n_iter, random_state=seed,
+                        print(f"Running t-SNE with perplexity = {perplexity} and max_iter = {n_iter}")
+                        plot_dynamics(data=df, perplexity=perplexity, max_iter=n_iter, random_state=seed,
                                             save_path=save_path, color_scheme=mode)
             except Exception as e:
                 logging.error(f"Error plotting {file}: {e}", exc_info=True)

@@ -2,6 +2,8 @@ import ast
 import logging
 import os
 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -16,11 +18,10 @@ logging.basicConfig(level=logging.ERROR,
 import sys
 from pathlib import Path
 
-ROOT = str(Path(__file__).resolve().parents[2])
+ROOT = str(Path(__file__).resolve().parents[1])
 CURRENT = str(Path(__file__).resolve().parents[0])
-sys.path.append(ROOT)
-sys.path.append(CURRENT)
-print(sys.path)
+sys.path.insert(0, ROOT)
+sys.path.insert(0, CURRENT)
 
 # KPSS Test
 def kpss_test(series):
@@ -135,7 +136,7 @@ def plot_res(target_res_file):
     df = pd.read_csv(target_res_file)
 
     # Read the asset names from the config file
-    asset_config_path = "/home/hcxia/HistoryIsNotEough/configs/_asset_list_/dj30.txt"
+    asset_config_path = os.path.join(ROOT, "configs/_asset_list_/dj30.txt")
     with open(asset_config_path, 'r') as f:
         assets = f.read().splitlines()
 
@@ -177,8 +178,8 @@ def plot_res(target_res_file):
     plt.savefig(target_res_file.replace('.csv', '.png'))
 
 
-workdir="workdir"
-data_dir="../datasets"
+workdir=os.path.join(ROOT, "workdir")
+data_dir=os.path.join(ROOT, "datasets")
 quantitative_analysis_dir=os.path.join(workdir,"quantitative_analysis")
 seed=42
 def main():
@@ -209,6 +210,8 @@ def main():
                 # Trend Forecasting(Classification): "mov1"
                 target_columns = ["OT", "ret1"]
                 for target_column in target_columns:
+                    if target_column not in df.columns:
+                        continue
                     try:
                         target = df.loc[:, target_column]
                         x = df.drop(columns=[target_column])

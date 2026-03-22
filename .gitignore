@@ -1,18 +1,59 @@
-# Ignore all .pyc files
-*.pyc
-
-# Ignore specific folders
-workdir/
-datasets/
-
-# Ignore __pycache__ directories
+# Python
 __pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
 
-# Ignore all .sh files
+# Jupyter
+.ipynb_checkpoints/
+
+# Env
+.env
+
+# Shell scripts
 *.sh
 
-# Ignore all data files
+# Data files
 *.csv
 *.parquet
-# Ignore all .html files
+*.npy
+*.pickle
+*.pkl
+*.h5
+*.hdf5
 *.html
+
+# Model weights
+*.pth
+*.pt
+*.onnx
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+
+# Archives
+*.tar.gz
+*.tgz
+*.zip
+
+# Large data directories
+datasets/
+workdir/
+workdir_old/
+
+# RL training outputs (saved models, logs, TensorBoard)
+downstream_tasks/rl/trading/workdir/
+downstream_tasks/rl/trading/tensorboard_logs/
+
+# GAN checkpoints
+generator/GRT_GAN/checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+*.bak
