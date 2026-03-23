@@ -49,6 +49,12 @@ class GeneratorAPI:
         self.obs_features=obs_features
         self.temporal_features = temporal_features
 
+        # Build a fast date-lookup index from output_starting_date (shape: N×num_stocks)
+        # All columns share the same date per row, so use column 0
+        self._date_array = pd.DatetimeIndex(self.output_starting_date[:, 0])
+        self._date_set = set(self._date_array)
+        print(f"GAN date range: {self._date_array[0]} → {self._date_array[-1]}  ({len(self._date_array)} dates)")
+
         # self.X = np.concatenate((self.output_data, self.output_macro_data), axis=2)
 
         # load the args.pickle from the model_path
@@ -499,13 +505,17 @@ class GeneratorAPI:
         if not isinstance(timestamp, pd.Timestamp):
             timestamp = pd.Timestamp(timestamp)
         # Use the timestamp to locate the index from self.output_starting_date
-        # time_stamp_index = self.output_starting_date.index(timestamp)
-        # print("self.output_starting_date: ", self.output_starting_date)
-        # print("timestamp: ", timestamp)
-        time_stamp_index = np.where(self.output_starting_date == timestamp)[0][0]
+        # Exact match first, nearest-date fallback for dates outside GAN range
+        if timestamp in self._date_set:
+            time_stamp_index = self._date_array.get_loc(timestamp)
+        else:
+            # Clamp to GAN date range and find nearest available date
+            time_stamp_index = self._date_array.get_indexer([timestamp], method='nearest')[0]
 
         # startdate_index=time_stamp_index-self.args.max_seq_len//2
         startdate_index=time_stamp_index-self.args.max_seq_len//2
+        # Clamp to valid array bounds
+        startdate_index = max(0, min(startdate_index, len(self.output_data) - 1))
 
         # find ticker index from the ticker_list
         # ticker_index=self.ticker_list.index(self.ticker_name)
