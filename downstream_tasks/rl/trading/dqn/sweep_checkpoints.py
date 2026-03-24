@@ -77,7 +77,7 @@ def evaluate(cfg, agent, envs, device):
 
 
 def main():
-    config_path = os.path.join(CURRENT, "configs", "DBB.py")
+    config_path = os.path.join(CURRENT, "configs", "AAPL_aug.py")
     cfg = Config.fromfile(config_path)
     cfg.merge_from_dict({"root": ROOT})
 
@@ -95,8 +95,9 @@ def main():
     torch.manual_seed(cfg.seed)
     device = torch.device("cpu")
 
-    # Load dataset once
-    dataset = Dataset_Stocks(root_path=ROOT, data_path=cfg.dataset.data_path,
+    # Load dataset once — data_path in config is relative, make it absolute
+    abs_data_path = os.path.join(ROOT, cfg.dataset.data_path)
+    dataset = Dataset_Stocks(root_path=ROOT, data_path=abs_data_path,
                              train_stock_ticker=cfg.select_stock, test_stock_ticker=cfg.select_stock,
                              features_name=cfg.dataset.features_name, temporals_name=cfg.dataset.temporals_name,
                              target=cfg.dataset.labels_name, flag="RL")
