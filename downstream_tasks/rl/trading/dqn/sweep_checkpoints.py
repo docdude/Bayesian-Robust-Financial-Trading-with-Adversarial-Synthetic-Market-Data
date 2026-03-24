@@ -22,7 +22,7 @@ from downstream_tasks.dataset import AugmentatedDatasetStocks as Dataset_Stocks
 from environment import EnvironmentRET
 from wrapper import make_env
 from policy import Agent
-from module.metrics import ARR, SR, CR, SOR, MDD, VOL
+from module.metrics import ARR, SR, CR, SOR, MDD, VOL, DD
 
 
 def get_quantile_belief(cfg, obs, quantile_belief_network):
@@ -33,7 +33,7 @@ def get_quantile_belief(cfg, obs, quantile_belief_network):
 
 
 def evaluate(cfg, agent, envs, device):
-    """Run one episode, return (total_return, total_profit, final_value, SR, MDD)."""
+    """Run one episode, return dict with all paper-comparable metrics."""
     state, info = envs.reset()
     rets = [info["ret"]]
     next_obs = torch.Tensor(state).to(device)
@@ -71,9 +71,13 @@ def evaluate(cfg, agent, envs, device):
             break
 
     rets = np.array(rets)
-    sr = SR(rets)
     mdd = MDD(rets)
-    return tr, tp, val, sr, mdd
+    dd = DD(rets)
+    return dict(
+        total_return=tr, profit=tp, value=val,
+        ARR=ARR(rets), SR=SR(rets), CR=CR(rets, mdd=mdd),
+        SOR=SOR(rets, dd=dd), MDD=mdd, VOL=VOL(rets),
+    )
 
 
 def main():
@@ -144,29 +148,43 @@ def main():
     ckpts = sorted([int(f.replace('.pth', '')) for f in os.listdir(save_dir)
                     if f.endswith('.pth') and not f.endswith('_adv.pth')])
 
-    print(f"{'Ckpt':>4s} {'Steps':>7s} | {'Val Return':>10s} {'Val Profit':>10s} {'Val Value':>12s} {'Val SR':>7s} {'Val MDD':>8s} | {'Test Return':>11s} {'Test Profit':>11s} {'Test Value':>12s} {'Test SR':>7s} {'Test MDD':>8s}")
-    print("-" * 130)
+    hdr = (f"{'Ckpt':>4s} {'Steps':>7s} | "
+           f"{'V-ARR%':>7s} {'V-SR':>6s} {'V-CR':>7s} {'V-SOR':>7s} {'V-MDD%':>7s} {'V-VOL':>6s} | "
+           f"{'T-ARR%':>7s} {'T-SR':>6s} {'T-CR':>7s} {'T-SOR':>7s} {'T-MDD%':>7s} {'T-VOL':>6s}")
+    print(hdr)
+    print("-" * len(hdr))
 
-    best_val_profit = -999
+    best_val_sr = -999
     best_ckpt = None
+    results = []
 
     for ckpt_num in ckpts:
         steps = ckpt_num * cfg.check_steps
         ckpt_path = os.path.join(save_dir, f"{ckpt_num}.pth")
         agent.load_state_dict(torch.load(ckpt_path, map_location=device))
 
-        v_ret, v_prof, v_val, v_sr, v_mdd = evaluate(cfg, agent, valid_envs, device)
-        t_ret, t_prof, t_val, t_sr, t_mdd = evaluate(cfg, agent, test_envs, device)
+        v = evaluate(cfg, agent, valid_envs, device)
+        t = evaluate(cfg, agent, test_envs, device)
+        results.append((ckpt_num, steps, v, t))
 
         marker = ""
-        if v_prof > best_val_profit:
-            best_val_profit = v_prof
+        if v['SR'] > best_val_sr:
+            best_val_sr = v['SR']
             best_ckpt = ckpt_num
             marker = " <-- best val"
 
-        print(f"{ckpt_num:4d} {steps:7d} | {v_ret:+10.4f} {v_prof:+10.2f}% {v_val:12,.0f} {v_sr:7.3f} {v_mdd:8.4f} | {t_ret:+11.4f} {t_prof:+11.2f}% {t_val:12,.0f} {t_sr:7.3f} {t_mdd:8.4f}{marker}")
+        print(f"{ckpt_num:4d} {steps:7d} | "
+              f"{v['ARR']*100:+7.2f} {v['SR']:6.3f} {v['CR']:+7.3f} {v['SOR']:+7.3f} {v['MDD']*100:7.2f} {v['VOL']:6.4f} | "
+              f"{t['ARR']*100:+7.2f} {t['SR']:6.3f} {t['CR']:+7.3f} {t['SOR']:+7.3f} {t['MDD']*100:7.2f} {t['VOL']:6.4f}{marker}")
 
-    print(f"\nBest validation checkpoint: {best_ckpt} ({best_ckpt * cfg.check_steps} steps) with profit {best_val_profit:+.2f}%")
+    # Print top-5 by test SR
+    by_test_sr = sorted(results, key=lambda x: x[3]['SR'], reverse=True)[:5]
+    print(f"\n=== Top 5 by Test Sharpe Ratio ===")
+    print(f"{'Ckpt':>4s} {'Steps':>7s} | {'ARR%':>7s} {'SR':>6s} {'CR':>7s} {'SOR':>7s} {'MDD%':>7s} {'VOL':>6s}")
+    for ckpt_num, steps, v, t in by_test_sr:
+        print(f"{ckpt_num:4d} {steps:7d} | {t['ARR']*100:+7.2f} {t['SR']:6.3f} {t['CR']:+7.3f} {t['SOR']:+7.3f} {t['MDD']*100:7.2f} {t['VOL']:6.4f}")
+
+    print(f"\nBest validation checkpoint: {best_ckpt} ({best_ckpt * cfg.check_steps} steps) with SR {best_val_sr:.3f}")
 
     valid_envs.close()
     test_envs.close()
