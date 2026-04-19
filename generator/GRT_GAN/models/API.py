@@ -26,8 +26,9 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 class GeneratorAPI:
 
-    def __init__(self, model_path,ticker_name,obs_features,temporal_features):
+    def __init__(self, model_path,ticker_name,obs_features,temporal_features,feature_method="derived"):
         """Load the model and data for inference"""
+        self.feature_method = feature_method
 
         # Set the path to the output data folder relative to this script
         output_data_folder = os.path.join(os.path.dirname(__file__), '../../../datasets/output_data')
@@ -45,6 +46,11 @@ class GeneratorAPI:
         self.original_close = np.load(os.path.join(output_data_folder, 'output_original_close.npy'))
         self.original_open = np.load(os.path.join(output_data_folder, 'output_original_open.npy'))
         self.output_adj_factor=np.load(os.path.join(output_data_folder, 'output_adj_factor.npy'))
+        # Load additional initial values for log_returns reconstruction
+        if feature_method == "log_returns":
+            self.original_high = np.load(os.path.join(output_data_folder, 'output_initial_high.npy'))
+            self.original_low = np.load(os.path.join(output_data_folder, 'output_initial_low.npy'))
+            self.original_volume = np.load(os.path.join(output_data_folder, 'output_initial_volume.npy'))
         self.ticker_name=ticker_name
         self.obs_features=obs_features
         self.temporal_features = temporal_features
@@ -487,6 +493,37 @@ class GeneratorAPI:
 
         return df
 
+    def _inverse_log_returns(self, df_features, initial_close, initial_open,
+                              initial_high, initial_low, initial_volume):
+        """Revert denormalized log returns to OHLCV data.
+
+        Each channel is reconstructed independently via cumulative exp-sum.
+        OHLC bar validity is enforced: high >= max(open, close), low <= min(open, close).
+        """
+        lr = df_features.values if isinstance(df_features, pd.DataFrame) else np.asarray(df_features)
+
+        close  = initial_close  * np.exp(np.cumsum(lr[:, 0]))
+        open_  = initial_open   * np.exp(np.cumsum(lr[:, 1]))
+        high   = initial_high   * np.exp(np.cumsum(lr[:, 2]))
+        low    = initial_low    * np.exp(np.cumsum(lr[:, 3]))
+        volume = initial_volume * np.exp(np.cumsum(lr[:, 4]))
+
+        # OHLC bar validity clamp
+        max_oc = np.maximum(open_, close)
+        min_oc = np.minimum(open_, close)
+        high = np.maximum(high, max_oc)
+        low  = np.minimum(low, min_oc)
+        volume = np.maximum(volume, 0)
+
+        return pd.DataFrame({
+            'open':      open_,
+            'adj_close': close,
+            'high':      high,
+            'low':       low,
+            'volume':    volume,
+            'close':     close,
+        })
+
 
     def call(self,timestamp,macro_epsilon):
         """
@@ -614,7 +651,17 @@ class GeneratorAPI:
         # first cast it to (120, 90)
 
         start_time=time.time()
-        pv_data=self.transform_generated_pv_feature_to_data(processed_pv_feature, close, open,caj_factor_ticker)
+        if self.feature_method == "log_returns":
+            # Independent per-channel reconstruction — no error propagation
+            initial_high = self.original_high[startdate_index, ticker_index]
+            initial_low = self.original_low[startdate_index, ticker_index]
+            initial_volume = self.original_volume[startdate_index, ticker_index]
+            pv_data = self._inverse_log_returns(
+                processed_pv_feature, close, open,
+                initial_high, initial_low, initial_volume
+            )
+        else:
+            pv_data=self.transform_generated_pv_feature_to_data(processed_pv_feature, close, open,caj_factor_ticker)
         # print("pv_data preview: ", pv_data)
         # do the same to the real_data
         # real_data_ticker=self.transform_generated_pv_feature_to_data(real_data_ticker, close, open,caj_factor_ticker)

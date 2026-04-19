@@ -57,3 +57,13 @@ generator/GRT_GAN/checkpoints/
 .DS_Store
 Thumbs.db
 *.bak
+
+# Chat / scratch
+chat.json
+
+# TensorBoard events
+events.out.tfevents*
+tensorboard/
+
+# Live trading logs
+live_trading/logs/

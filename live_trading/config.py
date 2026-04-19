@@ -10,12 +10,41 @@ ROOT = str(Path(__file__).resolve().parents[1])
 # Load .env from project root (won't overwrite existing env vars)
 load_dotenv(os.path.join(ROOT, ".env"))
 
-# Best checkpoint from sweep (ckpt 13 = 130K steps, SR=1.576)
-CHECKPOINT_PATH = os.path.join(
-    ROOT,
-    "downstream_tasks/rl/trading/workdir/exp/trading/AAPL/dqn/exp001_aug/saved_model/13.pth",
-)
-SCALER_PATH = os.path.join(ROOT, "live_trading/artifacts/scaler.pkl")
+# ── Portfolio: Tier 1 stocks with best checkpoint per ticker ───────────────
+# Each entry: ticker → (checkpoint_number, test_sharpe)
+# Selected by best val_SR from sweep; only tickers with test_SR >= 1.0
+TIER1_STOCKS = {
+    "PG":   {"ckpt": 2,  "test_SR": 2.58},
+    "MRK":  {"ckpt": 2,  "test_SR": 1.90},
+    "BA":   {"ckpt": 32, "test_SR": 1.59},
+    "MCD":  {"ckpt": 9,  "test_SR": 1.55},
+    "JNJ":  {"ckpt": 4,  "test_SR": 1.51},
+    "MSFT": {"ckpt": 18, "test_SR": 1.51},
+    "KO":   {"ckpt": 10, "test_SR": 1.35},
+    "NKE":  {"ckpt": 12, "test_SR": 1.11},
+}
+
+def _ckpt_path(ticker: str, ckpt: int) -> str:
+    return os.path.join(
+        ROOT,
+        f"downstream_tasks/rl/trading/workdir/exp/trading/{ticker}/dqn/exp001_aug/saved_model/{ckpt}.pth",
+    )
+
+def _scaler_path(ticker: str) -> str:
+    return os.path.join(ROOT, f"live_trading/artifacts/{ticker}_scaler.pkl")
+
+# Build per-ticker config dict used by the trader
+PORTFOLIO = {}
+for _ticker, _info in TIER1_STOCKS.items():
+    PORTFOLIO[_ticker] = {
+        "checkpoint_path": _ckpt_path(_ticker, _info["ckpt"]),
+        "scaler_path": _scaler_path(_ticker),
+    }
+
+# Legacy single-stock config (still used by single-stock mode)
+SYMBOL = "AAPL"
+CHECKPOINT_PATH = _ckpt_path("AAPL", 12)
+SCALER_PATH = _scaler_path("AAPL")
 
 # ── Agent architecture (must match training config AAPL_aug.py) ───────────
 INPUT_DIM = 153          # 150 features + 3 temporals
@@ -33,6 +62,30 @@ SYMBOL = "AAPL"
 INITIAL_CAPITAL = 100_000.0       # paper-trading starting capital
 TRANSACTION_COST_PCT = 1e-3       # must match training
 POSITION_LOWERBOUND = -1          # allow short
+
+# ── Risk management ───────────────────────────────────────────────────────
+# Portfolio-level drawdown circuit breaker: if equity drops below this
+# fraction of INITIAL_CAPITAL, halt ALL trading until manual reset.
+MAX_DRAWDOWN_PCT = 0.20           # 20% drawdown → full stop
+
+# Daily loss limit: if intraday PnL drops below this, skip remaining trades.
+DAILY_LOSS_LIMIT_PCT = 0.05       # 5% daily loss → stop for the day
+
+# Per-stock max allocation (hard cap regardless of equal-weight math).
+MAX_SINGLE_STOCK_PCT = 0.15       # never more than 15% in one name
+
+# Minimum cash reserve: always keep this fraction in cash (never go all-in).
+MIN_CASH_RESERVE_PCT = 0.05       # keep 5% cash buffer
+
+# Maximum trades per cycle (prevents runaway loops).
+MAX_TRADES_PER_CYCLE = 16         # 8 stocks × 2 (close + open) max
+
+# Data staleness: reject bars older than this many calendar days.
+MAX_DATA_STALENESS_DAYS = 5       # accounts for weekends + holidays
+
+# Gross exposure limit: sum of |position_value| / equity.
+# 1.0 = fully invested long-only; 2.0 = allows 100% long + 100% short.
+MAX_GROSS_EXPOSURE = 1.5
 
 # ── Feature engineering ───────────────────────────────────────────────────
 # Minimum bars needed: 60 (max rolling window) + 30 (observation window) + margin

@@ -3,11 +3,16 @@
 One-time utility: export the StandardScaler fitted on training data.
 
 This recreates the *exact* training environment setup, fits the scaler,
-and serialises it to live_trading/artifacts/scaler.pkl for live inference.
+and serialises it to live_trading/artifacts/<TICKER>_scaler.pkl for live inference.
 
 Usage:
-    python export_scaler.py
+    # Export a single stock:
+    python export_scaler.py --stock AAPL
+
+    # Export all Tier 1 stocks:
+    python export_scaler.py --stock PG MRK BA MCD JNJ MSFT KO NKE
 """
+import argparse
 import os
 import sys
 import pickle
@@ -24,8 +29,9 @@ from downstream_tasks.dataset import AugmentatedDatasetStocks as DS  # noqa: E40
 from environment import EnvironmentRET                               # noqa: E402
 
 
-def main():
-    config_path = os.path.join(DQN_DIR, "configs", "AAPL_aug.py")
+def export_scaler_for_stock(stock: str) -> str:
+    """Export the training scaler for a single stock. Returns output path."""
+    config_path = os.path.join(DQN_DIR, "configs", f"{stock}_aug.py")
     cfg = Config.fromfile(config_path)
     cfg.merge_from_dict({"root": ROOT})
     cfg.dataset.root = ROOT
@@ -69,15 +75,26 @@ def main():
 
     out_dir = os.path.join(ROOT, "live_trading", "artifacts")
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "scaler.pkl")
+    out_path = os.path.join(out_dir, f"{stock}_scaler.pkl")
 
     with open(out_path, "wb") as f:
         pickle.dump(scaler, f)
 
-    print(f"Scaler saved to {out_path}")
+    print(f"[{stock}] Scaler saved to {out_path}")
     print(f"  n_features_in_ = {scaler.n_features_in_}")
     print(f"  mean_[:5]      = {scaler.mean_[:5]}")
     print(f"  scale_[:5]     = {scaler.scale_[:5]}")
+    return out_path
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Export training scalers")
+    parser.add_argument("--stock", nargs="+", default=["AAPL"],
+                        help="Ticker(s) to export scalers for")
+    args = parser.parse_args()
+
+    for stock in args.stock:
+        export_scaler_for_stock(stock)
 
 
 if __name__ == "__main__":

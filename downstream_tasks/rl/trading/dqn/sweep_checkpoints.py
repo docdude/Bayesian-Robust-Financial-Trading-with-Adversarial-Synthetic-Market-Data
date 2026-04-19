@@ -2,6 +2,8 @@
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 os.environ["MKL_DEBUG_CPU_TYPE"] = "5"
+import argparse
+import csv
 import warnings
 warnings.filterwarnings("ignore")
 import sys
@@ -81,7 +83,11 @@ def evaluate(cfg, agent, envs, device):
 
 
 def main():
-    config_path = os.path.join(CURRENT, "configs", "AAPL_aug.py")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default=os.path.join(CURRENT, "configs", "AAPL_aug.py"),
+                        help="Path to the experiment config file")
+    args = parser.parse_args()
+    config_path = args.config
     cfg = Config.fromfile(config_path)
     cfg.merge_from_dict({"root": ROOT})
 
@@ -93,11 +99,13 @@ def main():
 
     exp_path = os.path.join(ROOT, cfg.workdir, cfg.tag)
     save_dir = os.path.join(exp_path, cfg.save_path)
+    results_dir = os.path.join(exp_path, "sweep_results")
+    os.makedirs(results_dir, exist_ok=True)
 
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load dataset once — data_path in config is relative, make it absolute
     abs_data_path = os.path.join(ROOT, cfg.dataset.data_path)
@@ -173,18 +181,52 @@ def main():
             best_ckpt = ckpt_num
             marker = " <-- best val"
 
-        print(f"{ckpt_num:4d} {steps:7d} | "
-              f"{v['ARR']*100:+7.2f} {v['SR']:6.3f} {v['CR']:+7.3f} {v['SOR']:+7.3f} {v['MDD']*100:7.2f} {v['VOL']:6.4f} | "
-              f"{t['ARR']*100:+7.2f} {t['SR']:6.3f} {t['CR']:+7.3f} {t['SOR']:+7.3f} {t['MDD']*100:7.2f} {t['VOL']:6.4f}{marker}")
+        row_line = (
+            f"{ckpt_num:4d} {steps:7d} | "
+            f"{v['ARR']*100:+7.2f} {v['SR']:6.3f} {v['CR']:+7.3f} {v['SOR']:+7.3f} {v['MDD']*100:7.2f} {v['VOL']:6.4f} | "
+            f"{t['ARR']*100:+7.2f} {t['SR']:6.3f} {t['CR']:+7.3f} {t['SOR']:+7.3f} {t['MDD']*100:7.2f} {t['VOL']:6.4f}{marker}"
+        )
+        print(row_line)
 
     # Print top-5 by test SR
     by_test_sr = sorted(results, key=lambda x: x[3]['SR'], reverse=True)[:5]
-    print(f"\n=== Top 5 by Test Sharpe Ratio ===")
+    print("\n=== Top 5 by Test Sharpe Ratio ===")
     print(f"{'Ckpt':>4s} {'Steps':>7s} | {'ARR%':>7s} {'SR':>6s} {'CR':>7s} {'SOR':>7s} {'MDD%':>7s} {'VOL':>6s}")
     for ckpt_num, steps, v, t in by_test_sr:
         print(f"{ckpt_num:4d} {steps:7d} | {t['ARR']*100:+7.2f} {t['SR']:6.3f} {t['CR']:+7.3f} {t['SOR']:+7.3f} {t['MDD']*100:7.2f} {t['VOL']:6.4f}")
 
     print(f"\nBest validation checkpoint: {best_ckpt} ({best_ckpt * cfg.check_steps} steps) with SR {best_val_sr:.3f}")
+
+    # Persist results as CSV.
+    csv_path = os.path.join(results_dir, f"sweep_{cfg.select_stock}.csv")
+
+    csv_fields = [
+        "ckpt", "steps",
+        "val_ARR", "val_SR", "val_CR", "val_SOR", "val_MDD", "val_VOL",
+        "test_ARR", "test_SR", "test_CR", "test_SOR", "test_MDD", "test_VOL",
+    ]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=csv_fields)
+        writer.writeheader()
+        for ckpt_num, steps, v, t in results:
+            writer.writerow({
+                "ckpt": ckpt_num,
+                "steps": steps,
+                "val_ARR": v["ARR"],
+                "val_SR": v["SR"],
+                "val_CR": v["CR"],
+                "val_SOR": v["SOR"],
+                "val_MDD": v["MDD"],
+                "val_VOL": v["VOL"],
+                "test_ARR": t["ARR"],
+                "test_SR": t["SR"],
+                "test_CR": t["CR"],
+                "test_SOR": t["SOR"],
+                "test_MDD": t["MDD"],
+                "test_VOL": t["VOL"],
+            })
+
+    print(f"Saved: {csv_path}")
 
     valid_envs.close()
     test_envs.close()

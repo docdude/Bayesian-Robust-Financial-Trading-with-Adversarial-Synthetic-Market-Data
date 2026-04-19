@@ -8,8 +8,7 @@ from datetime import datetime
 import time
 import signal
 from pandas_market_calendars import get_calendar
-from urllib.request import urlopen
-import certifi
+import requests as _requests
 import json
 from dotenv import load_dotenv
 
@@ -20,10 +19,18 @@ class TimeoutException(Exception):
 def timeout_handler(signum, frame):
     raise TimeoutException("Time out")
 
-def get_jsonparsed_data(url):
-    response = urlopen(url, cafile=certifi.where())
-    data = response.read().decode("utf-8")
-    return json.loads(data)
+def get_jsonparsed_data(url, max_retries=5):
+    for attempt in range(max_retries):
+        r = _requests.get(url, timeout=60)
+        if r.status_code in (429, 402):
+            wait = 15 * (attempt + 1)
+            print(f"  {r.status_code} rate-limited, waiting {wait}s (attempt {attempt+1}/{max_retries})...")
+            time.sleep(wait)
+            continue
+        r.raise_for_status()
+        return r.json()
+    r.raise_for_status()
+    return r.json()
 
 NYSE = get_calendar('XNYS')
 
@@ -58,7 +65,8 @@ class FMPDayPriceDownloader(Downloader):
 
         self.stocks = self._init_stocks()
 
-        self.request_url = "https://financialmodelingprep.com/api/v3/historical-price-full/{}?from={}&to={}&apikey={}"
+        self.request_url_full = "https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={}&from={}&to={}&apikey={}"
+        self.request_url_adj = "https://financialmodelingprep.com/stable/historical-price-eod/dividend-adjusted?symbol={}&from={}&to={}&apikey={}"
 
         super().__init__(**kwargs)
 
@@ -135,31 +143,44 @@ class FMPDayPriceDownloader(Downloader):
                             "volume": [],
                             "timestamp": [],
                             "adjClose": [],
-                            "unadjustedVolume": [],
                             "change": [],
                             "changePercent": [],
                             "vwap": [],
-                            "label": [],
-                            "changeOverTime": []
                         }
 
-                        request_url = self.request_url.format(
+                        url_full = self.request_url_full.format(
+                            stock,
+                            start.strftime("%Y-%m-%d"),
+                            end.strftime("%Y-%m-%d"),
+                            self.token)
+                        url_adj = self.request_url_adj.format(
                             stock,
                             start.strftime("%Y-%m-%d"),
                             end.strftime("%Y-%m-%d"),
                             self.token)
 
                         signal.signal(signal.SIGALRM, timeout_handler)
-                        signal.alarm(60)
+                        signal.alarm(120)
 
                         try:
                             time.sleep(self.delay)
-                            aggs = get_jsonparsed_data(request_url)
-                            aggs = aggs["historical"] if "historical" in aggs else []
+                            aggs = get_jsonparsed_data(url_full)
+                            if not isinstance(aggs, list):
+                                aggs = []
+                            time.sleep(self.delay)
+                            adj_aggs = get_jsonparsed_data(url_adj)
+                            if not isinstance(adj_aggs, list):
+                                adj_aggs = []
                             signal.alarm(0)
                         except TimeoutException:
                             print("Time out")
                             aggs = []
+                            adj_aggs = []
+
+                        # Build adjClose lookup by date
+                        adj_map = {}
+                        for aa in adj_aggs:
+                            adj_map[aa["date"]] = aa.get("adjClose", None)
 
                         if len(aggs) == 0:
                             with open(self.log_path, "a") as op:
@@ -174,13 +195,10 @@ class FMPDayPriceDownloader(Downloader):
                             chunk_df["close"].append(a["close"])
                             chunk_df["volume"].append(a["volume"])
                             chunk_df["timestamp"].append(a["date"])
-                            chunk_df["adjClose"].append(a["adjClose"])
-                            chunk_df["unadjustedVolume"].append(a["unadjustedVolume"])
-                            chunk_df["change"].append(a["change"])
-                            chunk_df["changePercent"].append(a["changePercent"])
-                            chunk_df["vwap"].append(a["vwap"])
-                            chunk_df["label"].append(a["label"])
-                            chunk_df["changeOverTime"].append(a["changeOverTime"])
+                            chunk_df["adjClose"].append(adj_map.get(a["date"], a["close"]))
+                            chunk_df["change"].append(a.get("change", 0))
+                            chunk_df["changePercent"].append(a.get("changePercent", 0))
+                            chunk_df["vwap"].append(a.get("vwap", 0))
 
                         chunk_df = pd.DataFrame(chunk_df,index=range(len(chunk_df["timestamp"])))
                         chunk_df["timestamp"] = pd.to_datetime(chunk_df["timestamp"]).apply(lambda x: x.strftime("%Y-%m-%d %H:%M:%S"))

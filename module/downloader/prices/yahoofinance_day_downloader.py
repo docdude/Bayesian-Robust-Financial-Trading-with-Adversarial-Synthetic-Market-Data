@@ -1,4 +1,5 @@
 import os
+import signal
 import pandas as pd
 from tqdm.auto import tqdm
 from datetime import datetime, timedelta
@@ -14,6 +15,9 @@ from module.utils.misc import generate_intervals
 
 class TimeoutException(Exception):
     pass
+
+def timeout_handler(signum, frame):
+    raise TimeoutException("Timed out")
 
 @DOWNLOADER.register_module(force=True)
 class YahooFinanceDayPriceDownloader():

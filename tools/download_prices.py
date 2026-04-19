@@ -83,20 +83,26 @@ def main():
 
     batch_size = cfg.batch_size if cfg.batch_size < len(stocks) else 5
     batch_size = min(len(stocks), batch_size)
+    max_workers = getattr(cfg, 'max_workers', batch_size)
 
     processes = []
     remaining_stocks = downloader.check_download()
 
+    # Build all process objects first
+    all_processes = []
     while remaining_stocks:
         batch = remaining_stocks[:batch_size]
         remaining_stocks = remaining_stocks[batch_size:]
-
         process = StockDownloaderProcess(batch, downloader)
-        processes.append(process)
-        process.start()
+        all_processes.append(process)
 
-    for process in processes:
-        process.join()
+    # Run in waves of max_workers concurrent processes
+    for i in range(0, len(all_processes), max_workers):
+        wave = all_processes[i:i + max_workers]
+        for process in wave:
+            process.start()
+        for process in wave:
+            process.join()
 
 if __name__ == '__main__':
     main()

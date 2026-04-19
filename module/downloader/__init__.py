@@ -6,6 +6,8 @@ from .news import FMPCryptoNewsDownloader
 from .prices import PolygonDayPriceDownloader
 from .prices import YahooFinanceDayPriceDownloader
 from .prices import FMPDayPriceDownloader
+from .prices import AlpacaDayPriceDownloader
+from .prices import TiingoDayPriceDownloader
 # from .tools import RapidAPIDownloader
 from .tools import FMPSentimentDownloader
 
@@ -19,5 +21,7 @@ __all__ = [
     "FMPForexNewsDownloader",
     "FMPCryptoNewsDownloader",
     "RapidAPIDownloader",
-    "FMPSentimentDownloader"
+    "FMPSentimentDownloader",
+    "AlpacaDayPriceDownloader",
+    "TiingoDayPriceDownloader",
 ]
