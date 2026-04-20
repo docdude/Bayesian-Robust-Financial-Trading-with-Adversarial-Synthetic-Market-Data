@@ -60,13 +60,39 @@ def _save_visualization(real_data, fake_data, save_dir):
 # Load real data from pre-processed NPYs
 # ---------------------------------------------------------------------------
 
-def load_real_data(data_dir):
-    """Load pre-processed windowed (N, seq_len, feature_dim) arrays."""
+def load_real_data(data_dir, train_tickers=None, expected_feature_dim=None):
+    """Load pre-processed windowed (N, seq_len, feature_dim) arrays.
+
+    If train_tickers is provided, slice and reorder the channel axis so it
+    matches the order/subset the generator was trained on.  Channels are
+    interleaved per-ticker (5 features each).
+    """
     stock_data = np.load(os.path.join(data_dir, 'output_data.npy')).astype(np.float32)
     macro_data = np.load(os.path.join(data_dir, 'output_macro_data.npy')).astype(np.float32)
+    ticker_list_full = np.load(os.path.join(data_dir, 'ticker_list.npy'))
     print(f"  Loaded stock_data:  {stock_data.shape}")
     print(f"  Loaded macro_data:  {macro_data.shape}")
-    return stock_data, macro_data
+    print(f"  Dataset tickers ({len(ticker_list_full)}): {list(ticker_list_full)}")
+
+    if train_tickers is None:
+        tickers = [str(t) for t in ticker_list_full]
+    else:
+        pos = {str(t): i for i, t in enumerate(ticker_list_full)}
+        missing = [t for t in train_tickers if t not in pos]
+        if missing:
+            raise ValueError(f"train_tickers not found in dataset: {missing}")
+        ch_idx = np.concatenate(
+            [np.arange(pos[t] * 5, pos[t] * 5 + 5) for t in train_tickers])
+        stock_data = stock_data[:, :, ch_idx]
+        tickers = list(train_tickers)
+        print(f"  Realigned to {len(tickers)} train tickers: {stock_data.shape}")
+
+    if expected_feature_dim is not None and stock_data.shape[-1] != expected_feature_dim:
+        raise ValueError(
+            f"stock_data has feature_dim={stock_data.shape[-1]} but config expects "
+            f"{expected_feature_dim}.  Pass --train_tickers matching the generator.")
+
+    return stock_data, macro_data, tickers
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +193,9 @@ def main():
                         help='Also evaluate with pure noise input (no real prefix)')
     parser.add_argument('--second_half', action='store_true',
                         help='Also evaluate only the generated second half (timesteps 60-119)')
+    parser.add_argument('--train_tickers', type=str, default=None,
+                        help='Comma-separated ticker list the generator was trained on '
+                             '(order matters). If omitted, all dataset tickers are used.')
     args = parser.parse_args()
 
     model_dir = args.model_dir
@@ -186,7 +215,22 @@ def main():
 
     # Load real data from NPYs
     print("\nLoading real data...")
-    stock_data, macro_data = load_real_data(args.data_dir)
+    train_tickers = (
+        [t.strip() for t in args.train_tickers.split(',') if t.strip()]
+        if args.train_tickers else None
+    )
+    stock_data, macro_data, tickers = load_real_data(
+        args.data_dir, train_tickers=train_tickers,
+        expected_feature_dim=feature_dim)
+
+    # Register channel names for per-channel metrics (if metrics support it)
+    try:
+        from generator.WAVENET_LAMBERT_GAN.metrics.evaluation_metrics import (
+            set_channel_names, build_multistock_channel_names)
+        set_channel_names(build_multistock_channel_names(
+            tickers, ['close_ret', 'open_ret', 'high_ret', 'low_ret', 'volume_ret']))
+    except Exception as _e:
+        print(f"  (channel-name registration skipped: {_e})")
 
     # Load generator
     print("\nLoading generator...")

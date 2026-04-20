@@ -466,6 +466,11 @@ def compute_mmd_per_channel(real_data, synthetic_data, num_samples=100,
     idx = rng.choice(min(len(real_data), len(synthetic_data)), size=n, replace=False)
     real_sub = np.asarray(real_data)[idx]
     synth_sub = np.asarray(synthetic_data)[idx]
+    if real_sub.shape[2] != synth_sub.shape[2]:
+        raise ValueError(
+            f"channel mismatch: real has {real_sub.shape[2]} channels, "
+            f"synthetic has {synth_sub.shape[2]}"
+        )
     n_channels = real_sub.shape[2]
 
     def _mmd_multiscale(x, y):
