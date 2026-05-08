@@ -4,7 +4,19 @@ import time
 from copy import deepcopy
 from datetime import datetime
 
-import backoff
+try:
+    import backoff
+except ImportError:
+    class _BackoffShim:
+        expo = None
+
+        @staticmethod
+        def on_exception(*args, **kwargs):
+            def _decorator(func):
+                return func
+            return _decorator
+
+    backoff = _BackoffShim()
 import numpy as np
 import pandas as pd
 from langchain_community.document_loaders import PlaywrightURLLoader
@@ -263,46 +275,55 @@ class Processor():
             "adj_close"
         ]
 
+        price = self.path_params["prices"][0]
+        price_type = price["type"]
+        price_source = os.path.join(self.root, price["path"])
+
+        if price_type in {"yahoofinance", "merged_yahoofinance"}:
+            price_column_map = {
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
+                "Volume": "volume",
+                "Date": "timestamp",
+                "Adj Close": "adj_close",
+            }
+        elif price_type == "fmp":
+            price_column_map = {
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "volume",
+                "adjClose": "adj_close",
+            }
+        else:
+            price_column_map = {
+                "open": "open",
+                "high": "high",
+                "low": "low",
+                "close": "close",
+                "volume": "volume",
+                "adjClose": "adj_close",
+            }
+
+        merged_price_df = None
+        if price_type == "merged_yahoofinance":
+            assert os.path.exists(price_source), "Price path {} does not exist".format(price_source)
+            merged_price_df = pd.read_csv(price_source).rename(columns=price_column_map)
+            assert "ticker" in merged_price_df.columns, "Merged price source must contain a ticker column"
+
         for stock in tqdm(stocks):
-            price = self.path_params["prices"][0]
-            price_type = price["type"]
-            price_path = price["path"]
-
-            price_path = os.path.join(self.root, price_path, "{}.csv".format(stock))
-
-            if price_type == "fmp":
-                price_column_map = {
-                    "open": "open",
-                    "high": "high",
-                    "low": "low",
-                    "close": "close",
-                    "volume": "volume",
-                    "adjClose": "adj_close",
-                }
-            elif price_type == "yahoofinance":
-                price_column_map = {
-                    "Open": "open",
-                    "High": "high",
-                    "Low": "low",
-                    "Close": "close",
-                    "Volume": "volume",
-                    "Date": "timestamp",
-                    "Adj Close": "adj_close",
-                }
+            if price_type == "merged_yahoofinance":
+                price_df = merged_price_df[merged_price_df["ticker"] == stock].copy()
+                assert not price_df.empty, "Ticker {} not found in merged price source {}".format(stock, price_source)
             else:
-                price_column_map = {
-                    "open": "open",
-                    "high": "high",
-                    "low": "low",
-                    "close": "close",
-                    "volume": "volume",
-                    "adjClose": "adj_close",
-                }
+                price_path = os.path.join(price_source, "{}.csv".format(stock))
+                assert os.path.exists(price_path), "Price path {} does not exist".format(price_path)
+                price_df = pd.read_csv(price_path).rename(columns=price_column_map)
 
-            assert os.path.exists(price_path), "Price path {} does not exist".format(price_path)
-            price_df = pd.read_csv(price_path)
-
-            price_df = price_df.rename(columns=price_column_map)[["timestamp"] + price_columns]
+            price_df = price_df[["timestamp"] + price_columns]
 
             price_df["timestamp"] = pd.to_datetime(price_df["timestamp"], utc=True)
             price_df = price_df[(price_df["timestamp"] >= start_date) & (price_df["timestamp"] < end_date)]

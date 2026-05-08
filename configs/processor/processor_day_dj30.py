@@ -22,9 +22,3 @@ processor = dict(
     tag = tag
 )
 
-
-root = None
-workdir = "workdir"
-tag = "processd_day_dj30"
-batch_size = 5
-
