@@ -1,0 +1,53 @@
+{
+  "config_dir": "downstream_tasks/rl/trading/dqn/configs",
+  "dataset_data_path": "datasets/processd_day_dj30_tiingo/features",
+  "stocks_path": "configs/_asset_list_/dj30_clean28.txt",
+  "train_start_date": "2000-01-03",
+  "train_end_date": "2017-12-31",
+  "valid_start_date": "2018-01-01",
+  "valid_end_date": "2020-12-31",
+  "test_start_date": "2021-01-01",
+  "test_end_date": "2023-12-31",
+  "supported_config_filenames": [
+    "AAPL.py",
+    "AAPL_aug.py",
+    "AAPL_aug_100k.py",
+    "AAPL_buy_and_hold.py",
+    "AMGN_aug.py",
+    "AXP_aug.py",
+    "BA_aug.py",
+    "CAT_aug.py",
+    "CSCO_aug.py",
+    "CVX_aug.py",
+    "DIS_aug.py",
+    "GS_aug.py",
+    "HD_aug.py",
+    "HON_aug.py",
+    "IBM_aug.py",
+    "INTC_aug.py",
+    "JNJ_aug.py",
+    "JPM_aug.py",
+    "KO_aug.py",
+    "MCD_aug.py",
+    "MMM_aug.py",
+    "MRK_aug.py",
+    "MSFT_aug.py",
+    "NKE_aug.py",
+    "PG_aug.py",
+    "SHW_aug.py",
+    "TRV_aug.py",
+    "UNH_aug.py",
+    "VZ_aug.py",
+    "WBA_aug.py",
+    "WMT_aug.py"
+  ],
+  "retired_legacy_config_filenames": [
+    "CRM_aug.py.disabled",
+    "V_aug.py.disabled"
+  ],
+  "smoke_validation": {
+    "config": "AAPL.py",
+    "tag": "smoke_tiingo_20000103",
+    "workdir": "downstream_tasks/rl/trading/workdir/exp/trading/AAPL/dqn/smoke_tiingo_20000103"
+  }
+}

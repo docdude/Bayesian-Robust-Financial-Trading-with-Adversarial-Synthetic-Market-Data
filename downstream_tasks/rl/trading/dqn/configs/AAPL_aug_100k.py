@@ -5,7 +5,8 @@ save_path = "saved_model"
 level = "day"
 select_stock = "AAPL"
 
-train_start_date = "2000-01-01"
+# date splits — Tiingo/WaveNet clean28 overlap starts 2000-01-03
+train_start_date = "2000-01-03"
 train_end_date = "2017-12-31"
 valid_start_date = "2018-01-01"
 valid_end_date = "2020-12-31"
@@ -66,14 +67,12 @@ transition_shape = dict(
 
 dataset = dict(
     root=root,
-    data_path="datasets/processd_day_dj30/features",
-    stocks_path="configs/_asset_list_/dj30.txt",
+    data_path="datasets/processd_day_dj30_tiingo/features",
+    stocks_path="configs/_asset_list_/dj30_clean28.txt",
     features_name=[
         'open',
         'high',
         'low',
-        'close',
-        'adj_close',
         'kmid',
         'kmid2',
         'klen',

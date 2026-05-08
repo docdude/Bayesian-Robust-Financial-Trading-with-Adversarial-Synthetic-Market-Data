@@ -1,9 +1,9 @@
 root = None
-workdir = "downstream_tasks/rl/trading/workdir/exp/trading/CSCO/dqn"
+workdir = "downstream_tasks/rl/trading/workdir/exp/trading/SHW/dqn"
 tag = "exp001_aug"
 save_path = "saved_model"
 level = "day"
-select_stock = "CSCO"
+select_stock = "SHW"
 
 # date splits — Tiingo/WaveNet clean28 overlap starts 2000-01-03
 train_start_date = "2000-01-03"
