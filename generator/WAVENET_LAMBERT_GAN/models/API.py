@@ -22,12 +22,21 @@ import pickle
 import time
 import random
 import warnings
+import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import tensorflow as tf
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+# Lambert fit params were pickled against a top-level ``gaussianize`` module.
+# Make the local implementation importable under that module name before unpickling.
+CURRENT = str(Path(__file__).resolve().parent)
+if CURRENT not in sys.path:
+    sys.path.append(CURRENT)
+from gaussianize import Gaussianize  # noqa: F401
 
 
 class GeneratorAPI:
@@ -59,7 +68,7 @@ class GeneratorAPI:
 
         # -- Load NPY data (same layout as GRT_GAN) --
         data_dir = os.path.join(os.path.dirname(__file__),
-                                '..', '..', '..', 'datasets', 'output_data_lambert')
+                                '..', '..', '..', 'datasets', 'output_data_lambert_derived')
         data_dir = os.path.normpath(data_dir)
         if not os.path.exists(data_dir):
             raise FileNotFoundError(f"Data directory not found: {data_dir}")

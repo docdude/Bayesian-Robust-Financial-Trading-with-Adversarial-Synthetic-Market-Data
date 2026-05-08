@@ -40,7 +40,7 @@ seed = 10
 
 # data augmentation (GAN adversarial agent)
 use_data_augmentation = True
-gan_model_path = "generator/GRT_GAN/output/dj30"
+gan_model_path = "generator/WAVENET_LAMBERT_GAN/output/dj30"
 augmentation_method = 'generator_adv_agent'
 augmentation_rate = 0.1
 epsilon = 0.1

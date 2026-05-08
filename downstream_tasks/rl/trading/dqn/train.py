@@ -33,7 +33,6 @@ from policy import Agent
 from actor_continuous import ActorContinuous
 from module.metrics import ARR, SR, CR, SOR, MDD, VOL
 from buffers import ReplayBuffer, ReservoirReplayBuffer
-from generator.GRT_GAN.models.API import GeneratorAPI
 
 
 def save_json(json_dict, file_path, indent=4):
@@ -370,7 +369,9 @@ def main():
 
     # init generator
     if cfg.use_data_augmentation and (cfg.augmentation_method == 'generator_noise' or cfg.augmentation_method == 'generator_adv_agent'):
-        model_path = getattr(cfg, 'gan_model_path', "generator/GRT_GAN/output/dj30")
+        from generator.WAVENET_LAMBERT_GAN.models.API import GeneratorAPI
+
+        model_path = getattr(cfg, 'gan_model_path', "generator/WAVENET_LAMBERT_GAN/output/dj30")
         ticker_name=cfg.select_stock
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
         print(f"GAN model path: {model_path}")
