@@ -369,14 +369,30 @@ def main():
 
     # init generator
     if cfg.use_data_augmentation and (cfg.augmentation_method == 'generator_noise' or cfg.augmentation_method == 'generator_adv_agent'):
-        from generator.WAVENET_LAMBERT_GAN.models.API import GeneratorAPI
-
         model_path = getattr(cfg, 'gan_model_path', "generator/WAVENET_LAMBERT_GAN/output/dj30")
+        data_path = getattr(cfg, 'gan_data_path', None)
+        if 'GRT_GAN' in model_path:
+            from generator.GRT_GAN.models.API import GeneratorAPI
+            generator_backend = 'GRT_GAN'
+        else:
+            from generator.WAVENET_LAMBERT_GAN.models.API import GeneratorAPI
+            generator_backend = 'WAVENET_LAMBERT_GAN'
         ticker_name=cfg.select_stock
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
         print(f"GAN model path: {model_path}")
+        if data_path is not None:
+            print(f"GAN data path: {data_path}")
+        print(f"Generator backend: {generator_backend}")
         print(f"Using CUDA: {torch.cuda.is_available()}")
-        generator=GeneratorAPI(model_path=model_path, ticker_name=ticker_name,obs_features=cfg.dataset.features_name,temporal_features=cfg.dataset.temporals_name)
+        generator_kwargs = dict(
+            model_path=model_path,
+            ticker_name=ticker_name,
+            obs_features=cfg.dataset.features_name,
+            temporal_features=cfg.dataset.temporals_name,
+        )
+        if generator_backend == 'GRT_GAN' and data_path is not None:
+            generator_kwargs['data_path'] = data_path
+        generator=GeneratorAPI(**generator_kwargs)
     else:
         generator=None
 
@@ -581,6 +597,7 @@ def main():
 
             pre_global_step = global_step
 
+    os.makedirs(os.path.join(exp_path, cfg.save_path), exist_ok=True)
     validate_agent(cfg, agent, val_envs, writer, device, global_step, exp_path)
     torch.save(agent.state_dict(),
                os.path.join(exp_path, cfg.save_path, "{}.pth".format(global_step // cfg.check_steps + 1)))

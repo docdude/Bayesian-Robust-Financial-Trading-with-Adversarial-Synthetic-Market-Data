@@ -243,102 +243,116 @@ class GeneratorAPI:
         def my_rank(x):
             return pd.Series(x).rank(pct=True).iloc[-1]
 
+        df = df.copy()
+        open_ = df["open"]
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        adj_close = df["adj_close"]
+        volume = df["volume"]
+
         oc_vals = df[["open", "close"]].to_numpy()
-        df["max_oc"] = np.maximum(oc_vals[:, 0], oc_vals[:, 1])
-        df["min_oc"] = np.minimum(oc_vals[:, 0], oc_vals[:, 1])
+        max_oc = np.maximum(oc_vals[:, 0], oc_vals[:, 1])
+        min_oc = np.minimum(oc_vals[:, 0], oc_vals[:, 1])
+        high_low_spread = high - low
 
-        df["kmid"]  = (df["close"] - df["open"]) / df["close"]
-        df["kmid2"] = (df["close"] - df["open"]) / (df["high"] - df["low"] + 1e-12)
-        df["klen"]  = (df["high"] - df["low"]) / df["open"]
-        df["kup"]   = (df["high"] - df["max_oc"]) / df["open"]
-        df["kup2"]  = (df["high"] - df["max_oc"]) / (df["high"] - df["low"] + 1e-12)
-        df["klow"]  = (df["min_oc"] - df["low"]) / df["open"]
-        df["klow2"] = (df["min_oc"] - df["low"]) / (df["high"] - df["low"] + 1e-12)
-        df["ksft"]  = (2.0 * df["close"] - df["high"] - df["low"]) / df["open"]
-        df["ksft2"] = (2.0 * df["close"] - df["high"] - df["low"]) / (df["high"] - df["low"] + 1e-12)
+        ret1 = close.pct_change(1)
+        abs_ret1 = ret1.abs()
+        pos_ret1 = ret1.clip(lower=0)
+        log_volume = np.log(volume + 1)
 
-        df["ret1"]     = df["close"].pct_change(1)
-        df["abs_ret1"] = df["ret1"].abs()
-        df["pos_ret1"] = df["ret1"].clip(lower=0)
-        df["log_volume"] = np.log(df["volume"] + 1)
+        vchg1 = volume - volume.shift(1)
+        abs_vchg1 = vchg1.abs()
+        pos_vchg1 = vchg1.clip(lower=0)
 
-        df["vchg1"]     = df["volume"] - df["volume"].shift(1)
-        df["abs_vchg1"] = df["vchg1"].abs()
-        df["pos_vchg1"] = df["vchg1"].clip(lower=0)
+        close_chg_ratio = close / close.shift(1)
+        vol_chg_log = np.log(volume / volume.shift(1) + 1)
 
-        df["close_chg_ratio"] = df["close"] / df["close"].shift(1)
-        df["vol_chg_log"]     = np.log(df["volume"] / df["volume"].shift(1) + 1)
+        retpos = (ret1 > 0).astype(float)
+        retneg = (ret1 < 0).astype(float)
 
-        retpos = (df["ret1"] > 0).astype(float)
-        retneg = (df["ret1"] < 0).astype(float)
+        features = {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "adj_close": adj_close,
+            "kmid": (close - open_) / close,
+            "kmid2": (close - open_) / (high_low_spread + 1e-12),
+            "klen": high_low_spread / open_,
+            "kup": (high - max_oc) / open_,
+            "kup2": (high - max_oc) / (high_low_spread + 1e-12),
+            "klow": (min_oc - low) / open_,
+            "klow2": (min_oc - low) / (high_low_spread + 1e-12),
+            "ksft": (2.0 * close - high - low) / open_,
+            "ksft2": (2.0 * close - high - low) / (high_low_spread + 1e-12),
+            "log_volume": log_volume,
+        }
 
         windows = [5, 10, 20, 30, 60]
         for w in windows:
-            shifted_close = df["close"].shift(w)
-            df[f"roc_{w}"]  = shifted_close / df["close"]
-            df[f"beta_{w}"] = (shifted_close - df["close"]) / (w * df["close"])
+            shifted_close = close.shift(w)
+            features[f"roc_{w}"] = shifted_close / close
+            features[f"beta_{w}"] = (shifted_close - close) / (w * close)
 
-            shifted_ = df["close"].shift(w)
-            mn_ = df["low"].where(df["low"] < shifted_, shifted_)
-            mx_ = df["high"].where(df["high"] > shifted_, shifted_)
-            df[f"rsv_{w}"] = (df["close"] - mn_) / (mx_ - mn_ + 1e-12)
+            shifted_ = close.shift(w)
+            mn_ = low.where(low < shifted_, shifted_)
+            mx_ = high.where(high > shifted_, shifted_)
+            features[f"rsv_{w}"] = (close - mn_) / (mx_ - mn_ + 1e-12)
 
-            c_rolling = df["close"].rolling(w)
-            df[f"ma_{w}"]   = c_rolling.mean() / df["close"]
-            df[f"std_{w}"]  = c_rolling.std()  / df["close"]
-            df[f"max_{w}"]  = c_rolling.max()  / df["close"]
-            df[f"min_{w}"]  = c_rolling.min()  / df["close"]
-            df[f"qtlu_{w}"] = c_rolling.quantile(0.8) / df["close"]
-            df[f"qtld_{w}"] = c_rolling.quantile(0.2) / df["close"]
-            df[f"rank_{w}"] = c_rolling.apply(my_rank) / w
+            c_rolling = close.rolling(w)
+            features[f"ma_{w}"] = c_rolling.mean() / close
+            features[f"std_{w}"] = c_rolling.std() / close
+            features[f"max_{w}"] = c_rolling.max() / close
+            features[f"min_{w}"] = c_rolling.min() / close
+            features[f"qtlu_{w}"] = c_rolling.quantile(0.8) / close
+            features[f"qtld_{w}"] = c_rolling.quantile(0.2) / close
+            features[f"rank_{w}"] = c_rolling.apply(my_rank) / w
 
-            h_rolling = df["high"].rolling(w)
-            l_rolling = df["low"].rolling(w)
-            df[f"imax_{w}"] = h_rolling.apply(np.argmax) / w
-            df[f"imin_{w}"] = l_rolling.apply(np.argmin) / w
-            df[f"imxd_{w}"] = (h_rolling.apply(np.argmax)
-                               - l_rolling.apply(np.argmin)) / w
+            h_rolling = high.rolling(w)
+            l_rolling = low.rolling(w)
+            h_argmax = h_rolling.apply(np.argmax)
+            l_argmin = l_rolling.apply(np.argmin)
+            features[f"imax_{w}"] = h_argmax / w
+            features[f"imin_{w}"] = l_argmin / w
+            features[f"imxd_{w}"] = (h_argmax - l_argmin) / w
 
-            df[f"cntp_{w}"] = retpos.rolling(w).sum() / w
-            df[f"cntn_{w}"] = retneg.rolling(w).sum() / w
-            df[f"cntd_{w}"] = df[f"cntp_{w}"] - df[f"cntn_{w}"]
+            cntp = retpos.rolling(w).sum() / w
+            cntn = retneg.rolling(w).sum() / w
+            features[f"cntp_{w}"] = cntp
+            features[f"cntn_{w}"] = cntn
+            features[f"cntd_{w}"] = cntp - cntn
 
-            df[f"corr_{w}"] = df["close"].rolling(w).corr(df["log_volume"])
-            df[f"cord_{w}"] = df["close_chg_ratio"].rolling(w).corr(df["vol_chg_log"])
+            features[f"corr_{w}"] = close.rolling(w).corr(log_volume)
+            features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(vol_chg_log)
 
-            sum_abs = df["abs_ret1"].rolling(w).sum()
-            sum_pos = df["pos_ret1"].rolling(w).sum()
-            df[f"sump_{w}"] = sum_pos / (sum_abs + 1e-12)
-            df[f"sumn_{w}"] = 1.0 - df[f"sump_{w}"]
-            df[f"sumd_{w}"] = 2.0 * df[f"sump_{w}"] - 1.0
+            sum_abs = abs_ret1.rolling(w).sum()
+            sum_pos = pos_ret1.rolling(w).sum()
+            sump = sum_pos / (sum_abs + 1e-12)
+            features[f"sump_{w}"] = sump
+            features[f"sumn_{w}"] = 1.0 - sump
+            features[f"sumd_{w}"] = 2.0 * sump - 1.0
 
-            v_rolling = df["volume"].rolling(w)
-            df[f"vma_{w}"]  = v_rolling.mean() / (df["volume"] + 1e-12)
-            df[f"vstd_{w}"] = v_rolling.std()  / (df["volume"] + 1e-12)
+            v_rolling = volume.rolling(w)
+            features[f"vma_{w}"] = v_rolling.mean() / (volume + 1e-12)
+            features[f"vstd_{w}"] = v_rolling.std() / (volume + 1e-12)
 
-            shift_serie = np.abs(df["close"] / df["close"].shift(1) - 1) * df["volume"]
-            df[f"wvma_{w}"] = shift_serie.rolling(w).std() / (
-                shift_serie.rolling(w).mean() + 1e-12)
+            shift_serie = np.abs(close / close.shift(1) - 1) * volume
+            df1_ = shift_serie.rolling(w).std()
+            df2_ = shift_serie.rolling(w).mean()
+            features[f"wvma_{w}"] = df1_ / (df2_ + 1e-12)
 
-            sum_abs_v = df["abs_vchg1"].rolling(w).sum()
-            sum_pos_v = df["pos_vchg1"].rolling(w).sum()
-            df[f"vsump_{w}"] = sum_pos_v / (sum_abs_v + 1e-12)
-            df[f"vsumn_{w}"] = 1.0 - df[f"vsump_{w}"]
-            df[f"vsumd_{w}"] = 2.0 * df[f"vsump_{w}"] - 1.0
+            sum_abs_v = abs_vchg1.rolling(w).sum()
+            sum_pos_v = pos_vchg1.rolling(w).sum()
+            vsump = sum_pos_v / (sum_abs_v + 1e-12)
+            features[f"vsump_{w}"] = vsump
+            features[f"vsumn_{w}"] = 1.0 - vsump
+            features[f"vsumd_{w}"] = 2.0 * vsump - 1.0
 
-        df.drop(columns=[
-            "max_oc", "min_oc",
-            "ret1", "abs_ret1", "pos_ret1",
-            "vchg1", "abs_vchg1", "pos_vchg1",
-            "volume",
-            "close_chg_ratio",
-            "vol_chg_log",
-        ], inplace=True, errors="ignore")
-
-        df.replace([np.inf, -np.inf], np.nan, inplace=True)
-        df.fillna(0, inplace=True)
-        df = df[self.obs_features]
-        return df
+        feature_df = pd.DataFrame(features, index=df.index)
+        feature_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        feature_df.fillna(0, inplace=True)
+        return feature_df[self.obs_features]
 
     # ------------------------------------------------------------------
     # Main entry point for DQN pipeline
