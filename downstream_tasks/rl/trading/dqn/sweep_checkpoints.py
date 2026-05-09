@@ -19,7 +19,7 @@ CURRENT = str(Path(__file__).resolve().parents[0])
 sys.path.append(ROOT)
 sys.path.append(CURRENT)
 
-from mmengine.config import Config
+from mmengine.config import Config, DictAction
 from downstream_tasks.dataset import AugmentatedDatasetStocks as Dataset_Stocks
 from environment import EnvironmentRET
 from wrapper import make_env
@@ -86,18 +86,36 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=os.path.join(CURRENT, "configs", "AAPL_aug.py"),
                         help="Path to the experiment config file")
+    parser.add_argument(
+        '--cfg-options',
+        nargs='+',
+        action=DictAction,
+        help='override some settings in the used config, the key-value pair '
+             'in xxx=yyy format will be merged into config file. If the value to '
+             'be overwritten is a list, it should be like key="[a,b]" or key=a,b '
+             'It also allows nested list/tuple values, e.g. key="[(a,b),(c,d)]" '
+             'Note that the quotation marks are necessary and that no white space '
+             'is allowed.')
+    parser.add_argument("--root", type=str, default=ROOT)
     args = parser.parse_args()
     config_path = args.config
     cfg = Config.fromfile(config_path)
-    cfg.merge_from_dict({"root": ROOT})
+
+    if args.cfg_options is None:
+        args.cfg_options = dict()
+    if args.root is not None:
+        args.cfg_options["root"] = args.root
+    cfg.merge_from_dict(args.cfg_options)
+
+    root = args.root if args.root is not None else ROOT
 
     # Update data root
-    cfg.dataset.root = ROOT
+    cfg.dataset.root = root
     for key, value in cfg.items():
         if isinstance(value, dict) and "root" in value:
-            cfg[key]["root"] = ROOT
+            cfg[key]["root"] = root
 
-    exp_path = os.path.join(ROOT, cfg.workdir, cfg.tag)
+    exp_path = os.path.join(root, cfg.workdir, cfg.tag)
     save_dir = os.path.join(exp_path, cfg.save_path)
     results_dir = os.path.join(exp_path, "sweep_results")
     os.makedirs(results_dir, exist_ok=True)
@@ -108,8 +126,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load dataset once — data_path in config is relative, make it absolute
-    abs_data_path = os.path.join(ROOT, cfg.dataset.data_path)
-    dataset = Dataset_Stocks(root_path=ROOT, data_path=abs_data_path,
+    abs_data_path = os.path.join(root, cfg.dataset.data_path)
+    dataset = Dataset_Stocks(root_path=root, data_path=abs_data_path,
                              train_stock_ticker=cfg.select_stock, test_stock_ticker=cfg.select_stock,
                              features_name=cfg.dataset.features_name, temporals_name=cfg.dataset.temporals_name,
                              target=cfg.dataset.labels_name, flag="RL")
