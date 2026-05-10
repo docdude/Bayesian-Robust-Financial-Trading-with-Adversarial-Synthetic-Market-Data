@@ -358,6 +358,61 @@ class GeneratorAPI:
     # Main entry point for DQN pipeline
     # ------------------------------------------------------------------
 
+    def _coerce_macro_epsilon(self, macro_epsilon):
+        """Normalize macro noise into a shape compatible with the generator.
+
+        The DQN pipeline supplies either a flat macro vector, an exact
+        generator-length trajectory, or a shorter tail trajectory aligned to the
+        observed RL window. Shorter trajectories are padded on the left so the
+        most recent steps remain perturbed.
+        """
+        macro_epsilon = np.asarray(macro_epsilon, dtype=self.output_macro_data.dtype)
+
+        if macro_epsilon.ndim == 1:
+            if macro_epsilon.shape[0] != self.macro_dim:
+                raise ValueError(
+                    f"Expected macro epsilon with {self.macro_dim} features, "
+                    f"got shape {macro_epsilon.shape}"
+                )
+            return macro_epsilon.reshape(1, 1, self.macro_dim)
+
+        if macro_epsilon.ndim == 2:
+            if macro_epsilon.shape[1] != self.macro_dim:
+                raise ValueError(
+                    f"Expected macro epsilon with trailing dim {self.macro_dim}, "
+                    f"got shape {macro_epsilon.shape}"
+                )
+            if macro_epsilon.shape[0] > self.seq_len:
+                raise ValueError(
+                    f"Expected at most {self.seq_len} macro steps, got "
+                    f"shape {macro_epsilon.shape}"
+                )
+            padded = np.zeros((1, self.seq_len, self.macro_dim), dtype=macro_epsilon.dtype)
+            padded[:, -macro_epsilon.shape[0]:, :] = macro_epsilon.reshape(1, *macro_epsilon.shape)
+            return padded
+
+        if macro_epsilon.ndim == 3:
+            if macro_epsilon.shape[0] != 1 or macro_epsilon.shape[2] != self.macro_dim:
+                raise ValueError(
+                    f"Expected macro epsilon shaped (1, steps, {self.macro_dim}), "
+                    f"got {macro_epsilon.shape}"
+                )
+            if macro_epsilon.shape[1] > self.seq_len:
+                raise ValueError(
+                    f"Expected at most {self.seq_len} macro steps, got "
+                    f"shape {macro_epsilon.shape}"
+                )
+            if macro_epsilon.shape[1] == self.seq_len:
+                return macro_epsilon
+
+            padded = np.zeros((1, self.seq_len, self.macro_dim), dtype=macro_epsilon.dtype)
+            padded[:, -macro_epsilon.shape[1]:, :] = macro_epsilon
+            return padded
+
+        raise ValueError(
+            f"Unsupported macro epsilon shape {macro_epsilon.shape}; expected 1D, 2D, or 3D input"
+        )
+
     def call(self, timestamp, macro_epsilon):
         """Generate synthetic features for one ticker at a given timestamp.
 
@@ -369,7 +424,9 @@ class GeneratorAPI:
         timestamp : str or pd.Timestamp
             Target date for generation.
         macro_epsilon : ndarray
-            Noise to perturb macro conditioning.
+            Noise to perturb macro conditioning. Accepts a flat macro vector,
+            a full generator-length macro trajectory, or a shorter tail
+            trajectory aligned to the observed RL window.
 
         Returns
         -------
@@ -405,7 +462,7 @@ class GeneratorAPI:
         macro = self.output_macro_data[start_idx:start_idx + 1, :, :]
         T = self.time[start_idx:start_idx + 1]
 
-        target_macro = macro + macro_epsilon
+        target_macro = macro + self._coerce_macro_epsilon(macro_epsilon)
 
         # -- Generator inference --
         generated_all = self.model_inference(real_data, target_macro, T)
