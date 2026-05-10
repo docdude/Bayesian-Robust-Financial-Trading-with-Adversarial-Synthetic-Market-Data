@@ -155,7 +155,7 @@ class ReplayBuffer:  # for off-policy
         self.cur_size = self.buffer_size if self.if_full else self.p
 
     def sample(self, batch_size: int):
-        sample_len = self.cur_size - 1
+        sample_len = self.cur_size
 
         ids = torch.randint(sample_len * self.num_envs, size=(batch_size,), requires_grad=False)
         ids0 = torch.fmod(ids, sample_len)  # ids % sample_len

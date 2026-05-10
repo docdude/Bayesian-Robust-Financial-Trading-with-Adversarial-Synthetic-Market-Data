@@ -132,6 +132,17 @@ class EnvironmentRET(gym.Env):
                     self.stocks_df.append(df)
         else:
             print("no normalize datasets")
+            for df in self.dataset.stocks_df:
+
+                if end_date is not None:
+                    df = df.loc[start_date:end_date]
+                else:
+                    df = df.loc[start_date:]
+
+                df[self.prices_name] = df[[name for name in self.prices_name]]
+                price_df = df[self.prices_name]
+                prices.append(price_df.values)
+                self.stocks_df.append(df)
 
         self.features = []
         self.select_stock_id = self.stocks2id[self.select_stock]
@@ -227,51 +238,22 @@ class EnvironmentRET(gym.Env):
             self.value = self.current_value(price)
             self.action = self.actions[stock_proportion + self.hold_on_action]
             return
-            
-        # Calculate total assets (cash + value of current stock position)
-        total_asset = self.current_value(price)
+        if self.position > 0:
+            self.cash += self.position * price * (1 - self.transaction_cost_pct)
+            self.position = 0.0
+        elif self.position < 0:
+            self.cash -= abs(self.position) * price * (1 + self.transaction_cost_pct)
+            self.position = 0.0
 
-        # Calculate desired stock holdings in dollar terms
-        desired_stock_holdings = stock_proportion * total_asset
+        if stock_proportion > 0:
+            next_position = self.cash / (price * (1 + self.transaction_cost_pct))
+            self.cash -= next_position * price * (1 + self.transaction_cost_pct)
+            self.position = next_position
+        elif stock_proportion < 0:
+            next_position = self.cash / (price * (1 + self.transaction_cost_pct))
+            self.cash += next_position * price * (1 - self.transaction_cost_pct)
+            self.position = -next_position
 
-        # Desired position in number of shares
-        if (stock_proportion == 1) and (previous_stock_proportion != 1):
-            next_position = desired_stock_holdings / price / (1 + self.transaction_cost_pct)
-        else:
-            next_position = desired_stock_holdings / price
-
-        # Calculate the change in position (number of shares to buy/sell)
-        delta_position = next_position - self.position
-
-        # Calculate the transaction amount in dollars
-        transaction_amount = delta_position * price
-
-        # Determine transaction costs
-        if previous_stock_proportion == 0:
-            # Moving from 0 to a stock position (either 1 or -1)
-            transaction_cost = abs(transaction_amount) * self.transaction_cost_pct
-        elif previous_stock_proportion * stock_proportion < 0:
-            # Crossing from -1 to 1 or 1 to -1, only calculate transaction cost for 0 to new position
-            # Transaction cost applies to the amount moving from 0 to the new stock proportion 
-            transaction_cost = abs(next_position * price) * self.transaction_cost_pct
-        else:
-            # No transaction cost when moving within the same side or from a position to cash
-            transaction_cost = 0
-
-        # Update position
-        if stock_proportion == previous_stock_proportion:
-            try:
-                assert int(self.position) == int(next_position) and int(transaction_cost) == 0
-            except Exception as e:
-                import pdb
-                pdb.set_trace()
-                
-        self.position = next_position
-
-        # Update cash balance
-        self.cash = total_asset - next_position * price - transaction_cost
-        
-        # Update value
         self.value = self.current_value(price)
 
         # Update action
@@ -339,14 +321,13 @@ class EnvironmentRET(gym.Env):
         self.trade(self.previous_stock_proportion, stock_proportion=action, price=self.price)
         self.previous_stock_proportion = action
 
-        post_value = self.value
-
         self.timestamp_index = self.timestamp_index + 1
         self.timestamp_datetime = self.get_current_timestamp_datetime()
         self.price = self.get_price()
+        self.value = self.current_value(self.price)
 
         next_state = self.features[self.timestamp_index - self.timestamps + 1: self.timestamp_index + 1, :]
-        reward = (post_value - pre_value) / pre_value
+        reward = (self.value - pre_value) / pre_value
 
         self.state = next_state
 

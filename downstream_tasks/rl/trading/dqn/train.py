@@ -31,7 +31,7 @@ from environment import EnvironmentRET
 from wrapper import make_env
 from policy import Agent
 from actor_continuous import ActorContinuous
-from module.metrics import ARR, SR, CR, SOR, MDD, VOL
+from module.metrics import ARR, SR, CR, DD, SOR, MDD, VOL
 from buffers import ReplayBuffer, ReservoirReplayBuffer
 
 
@@ -108,8 +108,9 @@ def data_augmentation_function(data: np.ndarray, cfg,
         return ((data + epsilon * noise * data_std), noise)
     elif method == 'generator_noise':
         # the number of macro features is 46
-        noise = np.random.normal(loc=0.0, scale=1, size=46)
         num_envs = data.shape[0]
+        macro_dim = getattr(generator, "macro_dim", 46)
+        noise = np.random.normal(loc=0.0, scale=1, size=(num_envs, macro_dim))
         new_obs = np.zeros(data.shape)
         # print("data.shape", data.shape)
         for i in range(num_envs):
@@ -140,7 +141,7 @@ def data_augmentation_function(data: np.ndarray, cfg,
         num_envs = data.shape[0]
         new_obs = np.zeros(data.shape)
         for i in range(num_envs):
-            generated_data = generator.call(timestamp[i],noise[i][-1])
+            generated_data = generator.call(timestamp[i],noise[i])
             # print("generated_data.shape", generated_data.shape)
             # get the last data.shape[1] features
             generated_feature = generated_data[-data.shape[1]:]
@@ -369,7 +370,7 @@ def main():
 
     # init generator
     if cfg.use_data_augmentation and (cfg.augmentation_method == 'generator_noise' or cfg.augmentation_method == 'generator_adv_agent'):
-        model_path = getattr(cfg, 'gan_model_path', "generator/WAVENET_LAMBERT_GAN/output/dj30")
+        model_path = getattr(cfg, 'gan_model_path', "generator/WAVENET_LAMBERT_GAN/output/dj30_v6")
         data_path = getattr(cfg, 'gan_data_path', None)
         if 'GRT_GAN' in model_path:
             from generator.GRT_GAN.models.API import GeneratorAPI
@@ -517,13 +518,14 @@ def main():
                 
             if global_step % cfg.train_frequency == 0:
                 if cfg.use_nfsp and nfsp_rb.cur_size >= cfg.batch_size:
-                    states, _ = nfsp_rb.sample(cfg.batch_size)
+                    states, actions_nfsp = nfsp_rb.sample(cfg.batch_size)
                     states = torch.tensor(states).to(device)
+                    actions_nfsp = torch.as_tensor(actions_nfsp, device=device).long()
                     with torch.no_grad():
                         belief = get_quantile_belief(cfg, states, 
                                                      agent.quantile_belief_network) \
                                                      if cfg.use_quantile_belief else None
-                    loss_nfsp = F.mse_loss(agent.q_network(states, belief), agent.q_network_nfsp(states, belief))
+                    loss_nfsp = F.cross_entropy(agent.q_network_nfsp(states, belief), actions_nfsp)
                     nfsp_agent_optimizer.zero_grad()
                     loss_nfsp.backward()
                     nfsp_agent_optimizer.step()
@@ -593,7 +595,7 @@ def main():
                            os.path.join(exp_path, cfg.save_path, "{}.pth".format(global_step // cfg.check_steps)))
                 if cfg.use_data_augmentation and cfg.augmentation_method in ['adv_agent', 'generator_adv_agent']:
                     torch.save(adv_agent.state_dict(),
-                            os.path.join(exp_path, cfg.save_path, "{}_adv.pth".format(global_step // cfg.check_steps + 1)))
+                            os.path.join(exp_path, cfg.save_path, "{}_adv.pth".format(global_step // cfg.check_steps)))
 
             pre_global_step = global_step
 
@@ -683,7 +685,7 @@ def validate_agent(cfg, agent, envs, writer, device, global_step, exp_path):
     rets = np.array(rets)
     arr = ARR(rets)
     sr = SR(rets)
-    dd = MDD(rets)
+    dd = DD(rets)
     mdd = MDD(rets)
     cr = CR(rets, mdd=mdd)
     sor = SOR(rets, dd=dd)
