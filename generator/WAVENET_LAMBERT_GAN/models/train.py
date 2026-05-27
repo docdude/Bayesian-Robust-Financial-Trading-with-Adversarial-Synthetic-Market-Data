@@ -230,7 +230,7 @@ def train(
     seq_len=120,
     feature_dim=125,
     macro_dim=46,
-    latent_dim=125,
+    latent_dim=None,
     nfilt=256,
     n_stacks=3,
     dilation_rates=None,
@@ -270,8 +270,9 @@ def train(
         Number of stock PV features (25 tickers × 5 = 125).
     macro_dim : int
         Number of macro conditioning features (46).
-    latent_dim : int
-        Noise dimensionality = feature_dim (125, matching TimeGAN Z_dim).
+    latent_dim : int or None
+        Noise dimensionality. Must match feature_dim for the half-real latent
+        construction; if None, inferred from the loaded data.
     nfilt : int
         WaveNet convolution filter width (256, matching TimeGAN hidden_dim).
     n_stacks : int
@@ -309,6 +310,14 @@ def train(
     feature_dim = stock_data.shape[2]
     macro_dim = macro_data.shape[2]
     half_seq = seq_len // 2
+    if latent_dim is None:
+        latent_dim = feature_dim
+    elif latent_dim != feature_dim:
+        print(
+            f"  Overriding latent_dim={latent_dim} to feature_dim={feature_dim} "
+            "for half-real latent construction."
+        )
+        latent_dim = feature_dim
 
     if verbose:
         print(f"  {n_samples} windows, seq_len={seq_len}, "
@@ -351,26 +360,27 @@ def train(
                 os.path.join(ckpt_dir, f'discriminator_epoch{ckpt_epoch}.keras'))
             with open(os.path.join(ckpt_dir, f'state_epoch{ckpt_epoch}.pkl'), 'rb') as f:
                 state = pickle.load(f)
-            # Build optimizer state with a dummy step so variables are created
-            dummy_stock = stock_data[:1]
-            dummy_macro = macro_data[:1]
-            with tf.GradientTape() as _gt:
-                _fo = generator([dummy_stock[:, :, :latent_dim], dummy_macro], training=True)
-                _fl = tf.reduce_mean(_fo)
-            _gg = _gt.gradient(_fl, generator.trainable_variables)
-            gen_opt.apply_gradients(zip(_gg, generator.trainable_variables))
-            with tf.GradientTape() as _dt:
-                _do = discriminator(dummy_stock, training=True)
-                _dl = tf.reduce_mean(_do)
-            _dg = _dt.gradient(_dl, discriminator.trainable_variables)
-            disc_opt.apply_gradients(zip(_dg, discriminator.trainable_variables))
-            # Restore optimizer variable values
+            # Build optimizer slots WITHOUT perturbing weights.
+            # Keras 3 Adam exposes .build(var_list) which creates m/v/iter slots
+            # without invoking apply_gradients (so weights are untouched).
+            gen_opt.build(generator.trainable_variables)
+            disc_opt.build(discriminator.trainable_variables)
+            # Restore optimizer variable values (m, v, iterations, learning_rate)
             for var, val in zip(gen_opt.variables, state['gen_opt_vars']):
                 var.assign(val)
             for var, val in zip(disc_opt.variables, state['disc_opt_vars']):
                 var.assign(val)
             adaptive_lr.gen_lr = state['adaptive_lr_gen']
             adaptive_lr.disc_lr = state['adaptive_lr_disc']
+            # Re-sync the live optimizer LR to the adapted value so the first
+            # post-resume epochs don't run at the stale CLI default LR
+            # (adaptive_lr would otherwise only re-assign it every lr_adjust_every).
+            gen_opt.learning_rate.assign(adaptive_lr.gen_lr)
+            disc_opt.learning_rate.assign(adaptive_lr.disc_lr)
+            # Advance RNG past the already-completed epochs so the first
+            # resumed batches are not identical to the very first training batches.
+            tf.random.set_seed(seed + ckpt_epoch)
+            np.random.seed(seed + ckpt_epoch)
             history = state['history']
             # Backfill new loss keys for checkpoints saved before they existed
             for new_key in ['gen_std', 'gen_quantile']:
@@ -409,14 +419,20 @@ def train(
             fake_out_d = discriminator(fake_disc, training=True)
             fake_out_g = discriminator(fake_gen, training=True)
 
+            # D emits logits (no sigmoid). from_logits=True uses the stable
+            # sigmoid_cross_entropy_with_logits kernel so D keeps producing a
+            # usable adversarial gradient even when |logit| is large.
             d_real = tf.reduce_mean(tf.keras.losses.binary_crossentropy(
-                smooth_positive_labels(tf.ones_like(real_out)), real_out))
+                smooth_positive_labels(tf.ones_like(real_out)), real_out,
+                from_logits=True))
             d_fake = tf.reduce_mean(tf.keras.losses.binary_crossentropy(
-                smooth_negative_labels(tf.zeros_like(fake_out_d)), fake_out_d))
+                smooth_negative_labels(tf.zeros_like(fake_out_d)), fake_out_d,
+                from_logits=True))
             d_loss = d_real + d_fake
 
             g_adv = tf.reduce_mean(tf.keras.losses.binary_crossentropy(
-                smooth_positive_labels(tf.ones_like(fake_out_g)), fake_out_g))
+                smooth_positive_labels(tf.ones_like(fake_out_g)), fake_out_g,
+                from_logits=True))
             g_recon = tf.reduce_mean(
                 tf.keras.losses.huber(real_stock, fake_gen, delta=huber_delta))
             g_moment = compute_moment_loss(real_stock, fake_gen)
@@ -591,7 +607,8 @@ def main():
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--epochs', type=int, default=2000)
     parser.add_argument('--batch_size', type=int, default=256)
-    parser.add_argument('--latent_dim', type=int, default=125)
+    parser.add_argument('--latent_dim', type=int, default=None,
+                        help='Noise dimension; defaults to loaded feature_dim')
     parser.add_argument('--nfilt', type=int, default=256)
     parser.add_argument('--n_stacks', type=int, default=3)
     parser.add_argument('--lr_gen', type=float, default=0.0002)

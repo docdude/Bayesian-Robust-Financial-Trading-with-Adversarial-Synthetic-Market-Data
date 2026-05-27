@@ -83,7 +83,8 @@ if __name__ == "__main__":
     # Training hyperparameters (defaults match TimeGAN-aligned config)
     parser.add_argument('--epochs', type=int, default=2000)
     parser.add_argument('--batch_size', type=int, default=256)
-    parser.add_argument('--latent_dim', type=int, default=125)
+    parser.add_argument('--latent_dim', type=int, default=None,
+                        help='Noise dimension; defaults to loaded feature_dim')
     parser.add_argument('--nfilt', type=int, default=256)
     parser.add_argument('--n_stacks', type=int, default=3)
     parser.add_argument('--lr_gen', type=float, default=0.0002)

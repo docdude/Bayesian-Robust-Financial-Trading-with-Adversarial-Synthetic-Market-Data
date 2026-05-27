@@ -13,6 +13,7 @@ Usage:
         ticker_name='AAPL',
         obs_features=cfg.dataset.features_name,
         temporal_features=cfg.dataset.temporals_name,
+        data_dir='datasets/output_data_lambert_derived',
     )
     feature_df = api.call(timestamp='2020-01-02', macro_epsilon=noise)
 """
@@ -43,7 +44,7 @@ class GeneratorAPI:
     """Inference wrapper for a trained WaveNet Lambert GAN (GRT_GAN-compatible)."""
 
     def __init__(self, model_path, ticker_name, obs_features, temporal_features,
-                 feature_method="derived"):
+                 feature_method="derived", data_dir=None):
         """Load the model and NPY data for inference.
 
         Parameters
@@ -60,18 +61,42 @@ class GeneratorAPI:
             'derived' (default, recursive compounding from initial close,
             matches the preprocessing notebook and GRT_GAN's API default) or
             'log_returns' (independent per-channel exp-cumsum).
+        data_dir : str or None
+            Path to the preprocessed NPY data folder. If omitted, uses the
+            model config's data_dir when present, then falls back to the legacy
+            derived DJ30 data directory.
         """
         self.feature_method = feature_method
         self.ticker_name = ticker_name
         self.obs_features = obs_features
         self.temporal_features = temporal_features
 
+        # -- Load model config first; it records the training data directory. --
+        if not os.path.isdir(model_path):
+            raise FileNotFoundError(f"Model directory not found: {model_path}")
+
+        with open(os.path.join(model_path, 'config.pkl'), 'rb') as f:
+            self.config = pickle.load(f)
+
+        self.seq_len = self.config['seq_len']
+        self.latent_dim = self.config['latent_dim']
+        self.feature_dim = self.config['feature_dim']
+        self.macro_dim = self.config['macro_dim']
+
         # -- Load NPY data (same layout as GRT_GAN) --
-        data_dir = os.path.join(os.path.dirname(__file__),
-                                '..', '..', '..', 'datasets', 'output_data_lambert_derived')
+        repo_root = os.path.normpath(os.path.join(
+            os.path.dirname(__file__), '..', '..', '..'))
+        default_data_dir = os.path.join(
+            repo_root, 'datasets', 'output_data_lambert_derived')
+        data_dir = data_dir or self.config.get('data_dir') or default_data_dir
+        if not os.path.isabs(data_dir):
+            cwd_candidate = os.path.abspath(data_dir)
+            repo_candidate = os.path.normpath(os.path.join(repo_root, data_dir))
+            data_dir = cwd_candidate if os.path.exists(cwd_candidate) else repo_candidate
         data_dir = os.path.normpath(data_dir)
         if not os.path.exists(data_dir):
             raise FileNotFoundError(f"Data directory not found: {data_dir}")
+        self.data_dir = data_dir
 
         self.output_data = np.load(os.path.join(data_dir, 'output_data.npy'))
         self.output_history_data = np.load(os.path.join(data_dir, 'output_history_data.npy'))
@@ -90,6 +115,29 @@ class GeneratorAPI:
             self.original_low = np.load(os.path.join(data_dir, 'output_initial_low.npy'))
             self.original_volume = np.load(os.path.join(data_dir, 'output_initial_volume.npy'))
 
+        if self.output_data.shape[1] != self.seq_len:
+            raise ValueError(
+                f"Data seq_len={self.output_data.shape[1]} but model expects {self.seq_len}"
+            )
+        if self.output_data.shape[2] != self.feature_dim:
+            raise ValueError(
+                f"Data feature_dim={self.output_data.shape[2]} but model expects {self.feature_dim}"
+            )
+        if self.output_macro_data.shape[2] != self.macro_dim:
+            raise ValueError(
+                f"Data macro_dim={self.output_macro_data.shape[2]} but model expects {self.macro_dim}"
+            )
+        if self.latent_dim != self.feature_dim:
+            raise ValueError(
+                f"Model latent_dim={self.latent_dim} must equal feature_dim={self.feature_dim} "
+                "for half-real WaveNet API inference."
+            )
+        if self.ticker_name not in set(self.ticker_list.astype(str)):
+            raise ValueError(
+                f"Ticker {self.ticker_name!r} not found in GAN data tickers: "
+                f"{list(self.ticker_list.astype(str))}"
+            )
+
         # Lambert inverse transform params: {ticker: [(scaler1, gauss, scaler2) × 5]}
         with open(os.path.join(data_dir, 'lambert_fit_params.pkl'), 'rb') as f:
             self.lambert_fit_params = pickle.load(f)
@@ -100,24 +148,12 @@ class GeneratorAPI:
         print(f"GAN date range: {self._date_array[0]} → {self._date_array[-1]}"
               f"  ({len(self._date_array)} dates)")
 
-        # -- Load model config & generator --
-        if not os.path.isdir(model_path):
-            raise FileNotFoundError(f"Model directory not found: {model_path}")
-
-        with open(os.path.join(model_path, 'config.pkl'), 'rb') as f:
-            self.config = pickle.load(f)
-
-        self.seq_len = self.config['seq_len']
-        self.latent_dim = self.config['latent_dim']
-        self.feature_dim = self.config['feature_dim']
-        self.macro_dim = self.config['macro_dim']
-
         self.generator = tf.keras.models.load_model(
             os.path.join(model_path, 'generator.keras'))
 
         print(f"WaveNet Lambert GAN loaded: ticker={ticker_name}, "
               f"seq_len={self.seq_len}, feature_dim={self.feature_dim}, "
-              f"macro_dim={self.macro_dim}")
+              f"macro_dim={self.macro_dim}, data_dir={self.data_dir}")
 
     # ------------------------------------------------------------------
     # Model inference (matches GRT_GAN's half-real / half-noise strategy)
@@ -128,17 +164,18 @@ class GeneratorAPI:
 
         Parameters
         ----------
-        real_data : ndarray (1, seq_len, feature_dim)
-        target_macro : ndarray (1, seq_len, macro_dim)
-        T : ndarray (1,)  — sequence length (unused by WaveNet, kept for API compat)
+        real_data : ndarray (batch, seq_len, feature_dim)
+        target_macro : ndarray (batch, seq_len, macro_dim)
+        T : ndarray (batch,)  — sequence length (unused by WaveNet, kept for API compat)
 
         Returns
         -------
-        ndarray (1, seq_len, feature_dim)
+        ndarray (batch, seq_len, feature_dim)
         """
         half = self.seq_len // 2
+        batch_size = real_data.shape[0]
         # Half-real / half-noise latent (TimeGAN strategy)
-        noise = np.random.randn(1, half, self.latent_dim).astype(np.float32)
+        noise = np.random.randn(batch_size, half, self.latent_dim).astype(np.float32)
         z = np.concatenate([
             real_data[:, :half, :self.latent_dim],
             noise,
@@ -323,8 +360,9 @@ class GeneratorAPI:
             features[f"cntn_{w}"] = cntn
             features[f"cntd_{w}"] = cntp - cntn
 
-            features[f"corr_{w}"] = close.rolling(w).corr(log_volume)
-            features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(vol_chg_log)
+            # Match processor.cal_factor's pairwise rolling call so generated features stay on the training manifold.
+            features[f"corr_{w}"] = close.rolling(w).corr(pairwise=log_volume.rolling(w))
+            features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(pairwise=vol_chg_log.rolling(w))
 
             sum_abs = abs_ret1.rolling(w).sum()
             sum_pos = pos_ret1.rolling(w).sum()
@@ -357,6 +395,23 @@ class GeneratorAPI:
     # ------------------------------------------------------------------
     # Main entry point for DQN pipeline
     # ------------------------------------------------------------------
+
+    def _lookup_start_index(self, timestamp):
+        """Map a timestamp to the closest available generator window start."""
+        if not isinstance(timestamp, pd.Timestamp):
+            timestamp = pd.Timestamp(timestamp)
+
+        if timestamp in self._date_set:
+            ts_idx = self._date_array.get_loc(timestamp)
+        else:
+            ts_idx = self._date_array.get_indexer([timestamp], method='nearest')[0]
+
+        start_idx = ts_idx - self.seq_len // 2
+        return max(0, min(start_idx, len(self.output_data) - 1))
+
+    def _lookup_start_indices(self, timestamps):
+        """Vectorized timestamp lookup for batched generation."""
+        return np.asarray([self._lookup_start_index(timestamp) for timestamp in timestamps], dtype=np.int64)
 
     def _coerce_macro_epsilon(self, macro_epsilon):
         """Normalize macro noise into a shape compatible with the generator.
@@ -413,6 +468,120 @@ class GeneratorAPI:
             f"Unsupported macro epsilon shape {macro_epsilon.shape}; expected 1D, 2D, or 3D input"
         )
 
+    def _coerce_macro_epsilon_batch(self, macro_epsilon, batch_size):
+        """Normalize batched macro noise into a generator-compatible shape."""
+        macro_epsilon = np.asarray(macro_epsilon, dtype=self.output_macro_data.dtype)
+
+        if batch_size == 1:
+            return self._coerce_macro_epsilon(macro_epsilon)
+
+        if macro_epsilon.ndim == 2:
+            if macro_epsilon.shape != (batch_size, self.macro_dim):
+                raise ValueError(
+                    f"Expected batched macro epsilon shaped ({batch_size}, {self.macro_dim}), "
+                    f"got {macro_epsilon.shape}"
+                )
+            return macro_epsilon.reshape(batch_size, 1, self.macro_dim)
+
+        if macro_epsilon.ndim == 3:
+            if macro_epsilon.shape[0] != batch_size or macro_epsilon.shape[2] != self.macro_dim:
+                raise ValueError(
+                    f"Expected batched macro epsilon shaped ({batch_size}, steps, {self.macro_dim}), "
+                    f"got {macro_epsilon.shape}"
+                )
+            if macro_epsilon.shape[1] > self.seq_len:
+                raise ValueError(
+                    f"Expected at most {self.seq_len} macro steps, got shape {macro_epsilon.shape}"
+                )
+            if macro_epsilon.shape[1] == self.seq_len:
+                return macro_epsilon
+
+            padded = np.zeros((batch_size, self.seq_len, self.macro_dim), dtype=macro_epsilon.dtype)
+            padded[:, -macro_epsilon.shape[1]:, :] = macro_epsilon
+            return padded
+
+        raise ValueError(
+            f"Unsupported batched macro epsilon shape {macro_epsilon.shape}; expected 2D or 3D input"
+        )
+
+    def _postprocess_generated_sample(self, generated_all, start_idx, history_data, cal_factor, ticker_index):
+        """Convert one generated PV trajectory back into downstream features."""
+        pv_raw = generated_all[:, ticker_index * 5:(ticker_index + 1) * 5]
+        history_ticker = history_data[:, ticker_index * 5:(ticker_index + 1) * 5]
+
+        h_mean = history_ticker.mean(axis=0)
+        h_std = history_ticker.std(axis=0)
+        pv_denorm = (pv_raw * h_std) + h_mean
+
+        pv_original = self._inverse_lambert_per_feature(pv_denorm, self.ticker_name)
+        pv_df = pd.DataFrame(pv_original)
+
+        close_init = self.original_close[start_idx, ticker_index]
+        close_init = np.asarray(close_init)
+        if close_init.ndim > 0:
+            close_init = close_init[0]
+
+        open_init = self.original_open[start_idx, ticker_index]
+
+        if self.feature_method == "log_returns":
+            high_init = self.original_high[start_idx, ticker_index]
+            low_init = self.original_low[start_idx, ticker_index]
+            vol_init = self.original_volume[start_idx, ticker_index]
+            pv_data = self._inverse_log_returns(
+                pv_df, close_init, open_init,
+                high_init, low_init, vol_init)
+        else:
+            caj_ticker = cal_factor[ticker_index].reshape(-1)
+            pv_data = self.transform_generated_pv_feature_to_data(
+                pv_df, close_init, open_init, caj_ticker)
+
+        return self.transform_data_to_feature(pv_data)
+
+    def call_batch(self, timestamps, macro_epsilon):
+        """Generate synthetic features for multiple timestamps in one model call.
+
+        Parameters
+        ----------
+        timestamps : Sequence[str | pd.Timestamp]
+            Target dates for generation.
+        macro_epsilon : ndarray
+            Batched macro perturbations. Accepts either one flat macro vector per
+            sample with shape ``(batch, macro_dim)`` or a batched trajectory with
+            shape ``(batch, steps, macro_dim)``.
+
+        Returns
+        -------
+        list[pd.DataFrame]
+            Technical features for each requested timestamp.
+        """
+        timestamps = list(timestamps)
+        if not timestamps:
+            return []
+
+        batch_size = len(timestamps)
+        start_indices = self._lookup_start_indices(timestamps)
+        ticker_index = int(np.where(self.ticker_list == self.ticker_name)[0][0])
+
+        real_data = self.output_data[start_indices, :, :]
+        history_data = self.output_history_data[start_indices, :, :]
+        cal_factor = self.output_adj_factor[start_indices, :, :]
+        macro = self.output_macro_data[start_indices, :, :]
+        T = self.time[start_indices]
+
+        target_macro = macro + self._coerce_macro_epsilon_batch(macro_epsilon, batch_size)
+        generated_batch = self.model_inference(real_data, target_macro, T)
+
+        return [
+            self._postprocess_generated_sample(
+                generated_batch[i],
+                start_indices[i],
+                history_data[i],
+                cal_factor[i],
+                ticker_index,
+            )
+            for i in range(batch_size)
+        ]
+
     def call(self, timestamp, macro_epsilon):
         """Generate synthetic features for one ticker at a given timestamp.
 
@@ -434,73 +603,4 @@ class GeneratorAPI:
             Technical features (columns = self.obs_features).
             Consumer slices ``result[-N:]`` for the DQN observation.
         """
-        # NOTE: do NOT reseed RNGs here. Reseeding on every call with a fixed
-        # value makes every adversarial rollout identical, which defeats the
-        # point of generator-based data augmentation. Global seed is set once
-        # by the RL trainer; each ``call()`` must draw fresh noise.
-
-        if not isinstance(timestamp, pd.Timestamp):
-            timestamp = pd.Timestamp(timestamp)
-
-        # Timestamp → window index
-        if timestamp in self._date_set:
-            ts_idx = self._date_array.get_loc(timestamp)
-        else:
-            ts_idx = self._date_array.get_indexer(
-                [timestamp], method='nearest')[0]
-
-        start_idx = ts_idx - self.seq_len // 2
-        start_idx = max(0, min(start_idx, len(self.output_data) - 1))
-
-        # Ticker → column index
-        ticker_index = int(np.where(self.ticker_list == self.ticker_name)[0][0])
-
-        # Slice data arrays at this window index
-        real_data = self.output_data[start_idx:start_idx + 1, :, :]
-        history_data = self.output_history_data[start_idx:start_idx + 1, :, :][0]
-        cal_factor = self.output_adj_factor[start_idx:start_idx + 1, :, :]
-        macro = self.output_macro_data[start_idx:start_idx + 1, :, :]
-        T = self.time[start_idx:start_idx + 1]
-
-        target_macro = macro + self._coerce_macro_epsilon(macro_epsilon)
-
-        # -- Generator inference --
-        generated_all = self.model_inference(real_data, target_macro, T)
-
-        # Extract this ticker's 5 features
-        generated_all = generated_all[0]  # (seq_len, feature_dim)
-        pv_raw = generated_all[:, ticker_index * 5:(ticker_index + 1) * 5]
-        history_ticker = history_data[:, ticker_index * 5:(ticker_index + 1) * 5]
-
-        # Denormalize with history mean/std
-        h_mean = history_ticker.mean(axis=0)
-        h_std = history_ticker.std(axis=0)
-        pv_denorm = (pv_raw * h_std) + h_mean
-
-        # Inverse Lambert transform (per-feature scaler2⁻¹ → gauss⁻¹ → scaler1⁻¹)
-        pv_original = self._inverse_lambert_per_feature(pv_denorm, self.ticker_name)
-        pv_df = pd.DataFrame(pv_original)
-
-        # -- Reconstruct OHLCV --
-        close_init = self.original_close[start_idx, ticker_index]
-        close_init = np.asarray(close_init)
-        if close_init.ndim > 0:
-            close_init = close_init[0]
-
-        open_init = self.original_open[start_idx, ticker_index]
-
-        if self.feature_method == "log_returns":
-            high_init = self.original_high[start_idx, ticker_index]
-            low_init = self.original_low[start_idx, ticker_index]
-            vol_init = self.original_volume[start_idx, ticker_index]
-            pv_data = self._inverse_log_returns(
-                pv_df, close_init, open_init,
-                high_init, low_init, vol_init)
-        else:
-            caj_ticker = cal_factor[:, ticker_index].reshape(-1)
-            pv_data = self.transform_generated_pv_feature_to_data(
-                pv_df, close_init, open_init, caj_ticker)
-
-        # -- Compute technical features --
-        feature = self.transform_data_to_feature(pv_data)
-        return feature
+        return self.call_batch([timestamp], macro_epsilon)[0]
