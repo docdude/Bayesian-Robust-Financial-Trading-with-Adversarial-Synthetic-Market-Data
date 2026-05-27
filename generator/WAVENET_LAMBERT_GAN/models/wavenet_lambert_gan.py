@@ -197,8 +197,12 @@ def build_wavenet_discriminator(
     )
     if dropout_rate:
         x = Dropout(dropout_rate, seed=seed)(x)
+    # Emit raw logits (no sigmoid). Loss uses BinaryCrossentropy(from_logits=True)
+    # which is numerically stable — a sigmoid+BCE combo saturates for |logit|>~10,
+    # killing the gradient and leaving only the auxiliary moment/tail losses to
+    # train G. Keeping this as logits preserves the adversarial gradient.
     output = _maybe_sn(
-        Dense(1, activation='sigmoid', name='real_fake_output'),
+        Dense(1, name='real_fake_output'),
         use_spectral_norm,
     )(x)
     return Model(inputs=data_in, outputs=output, name='WaveNet_Discriminator')
