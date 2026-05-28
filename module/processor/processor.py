@@ -75,7 +75,7 @@ def cal_sentiment(df, columns):
     return df
 
 
-def cal_factor(df, level="day"):
+def cal_factor(df, level="day", real_correlation=False):
     # intermediate values
     df['max_oc'] = df[["open", "close"]].max(axis=1)
     df['min_oc'] = df[["open", "close"]].min(axis=1)
@@ -145,18 +145,33 @@ def cal_factor(df, level="day"):
         df['cntd_{}'.format(w)] = df['cntp_{}'.format(w)] - df['cntn_{}'.format(w)]
 
     for w in window:
-        df1 = df["close"].rolling(w)
-        df2 = np.log(df["volume"] + 1).rolling(w)
-        df["corr_{}".format(w)] = df1.corr(pairwise = df2)
+        # corr_w: rolling correlation between close and log(volume+1).
+        # NOTE: the legacy call ``df1.corr(pairwise=df2)`` passes a Rolling
+        # object to ``pairwise`` (truthy) while ``other`` stays None, so pandas
+        # computes self-correlation == 1.0.  ``real_correlation=True`` uses the
+        # intended Alpha158 price-volume correlation.  Default False preserves
+        # parity with checkpoints/scalers fit on the buggy 1.0 values.
+        if real_correlation:
+            df["corr_{}".format(w)] = df["close"].rolling(w).corr(
+                np.log(df["volume"] + 1))
+        else:
+            df1 = df["close"].rolling(w)
+            df2 = np.log(df["volume"] + 1).rolling(w)
+            df["corr_{}".format(w)] = df1.corr(pairwise = df2)
 
     for w in window:
-        df1 = df["close"]
-        df_shift1 = df1.shift(1)
-        df2 = df["volume"]
-        df_shift2 = df2.shift(1)
-        df1 = df1 / df_shift1
-        df2 = np.log(df2 / df_shift2 + 1)
-        df["cord_{}".format(w)] = df1.rolling(w).corr(pairwise = df2.rolling(w))
+        if real_correlation:
+            c_chg = df["close"] / df["close"].shift(1)
+            v_chg = np.log(df["volume"] / df["volume"].shift(1) + 1)
+            df["cord_{}".format(w)] = c_chg.rolling(w).corr(v_chg)
+        else:
+            df1 = df["close"]
+            df_shift1 = df1.shift(1)
+            df2 = df["volume"]
+            df_shift2 = df2.shift(1)
+            df1 = df1 / df_shift1
+            df2 = np.log(df2 / df_shift2 + 1)
+            df["cord_{}".format(w)] = df1.rolling(w).corr(pairwise = df2.rolling(w))
 
     df['abs_ret1'] = np.abs(df['ret1'])
     df['pos_ret1'] = df['ret1']
@@ -229,7 +244,8 @@ class Processor():
                  interval="day",
                  if_parse_url = False,
                  workdir = None,
-                 tag = None
+                 tag = None,
+                 real_correlation = False
                  ):
         self.root = root
         self.path_params = path_params
@@ -240,6 +256,7 @@ class Processor():
         self.if_parse_url = if_parse_url
         self.workdir = workdir
         self.tag = tag
+        self.real_correlation = real_correlation
 
         self.stocks = self._init_stocks()
 
@@ -344,7 +361,8 @@ class Processor():
             os.makedirs(outpath, exist_ok=True)
             price_df.to_parquet(os.path.join(outpath, "{}.parquet".format(stock)), index=False)
 
-            features_df = cal_factor(deepcopy(price_df), level=self.interval)
+            features_df = cal_factor(deepcopy(price_df), level=self.interval,
+                                     real_correlation=self.real_correlation)
             features_df = cal_target(features_df)
             outpath = os.path.join(self.root, self.workdir, self.tag, "features")
             os.makedirs(outpath, exist_ok=True)

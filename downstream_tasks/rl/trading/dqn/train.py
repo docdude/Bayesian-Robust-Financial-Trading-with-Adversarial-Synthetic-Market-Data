@@ -74,6 +74,23 @@ def build_storage(shape, type):
         type = np.float32
     return np.zeros(shape, dtype=type)
 
+
+def build_augmented_observations(data, generated_batch, cfg, scaler):
+    feature_count = len(cfg.dataset.features_name)
+    new_obs = np.zeros(data.shape)
+    for i, generated_data in enumerate(generated_batch):
+        generated_feature = generated_data[-data.shape[1]:]
+        generated_feature = np.concatenate(
+            (generated_feature, data[i][:, feature_count:]), axis=1)
+        if cfg.env.if_norm_temporal:
+            new_obs[i] = scaler.transform(generated_feature)
+        else:
+            generated_feature_norm = scaler.transform(
+                generated_feature[:, :feature_count])
+            new_obs[i] = np.concatenate(
+                (generated_feature_norm, generated_feature[:, feature_count:]), axis=1)
+    return new_obs
+
 def data_augmentation_function(data: np.ndarray, cfg, 
                                method: str = 'random', agent: Agent = None, 
                                device=None, adv_agent: ActorContinuous = None, generator=None,timestamp=None,scaler=None):
@@ -111,51 +128,25 @@ def data_augmentation_function(data: np.ndarray, cfg,
         num_envs = data.shape[0]
         macro_dim = getattr(generator, "macro_dim", 46)
         noise = np.random.normal(loc=0.0, scale=1, size=(num_envs, macro_dim))
-        new_obs = np.zeros(data.shape)
-        # print("data.shape", data.shape)
-        for i in range(num_envs):
-            generated_data = generator.call(timestamp[i],noise[i])
-            # print("generated_data.shape", generated_data.shape)
-            # get the last data.shape[1] features
-            generated_feature = generated_data[-data.shape[1]:]
-            # get the tempral features form data
-            generated_feature = np.concatenate((generated_feature,data[i][:,len(cfg.dataset.features_name):]),axis=1)
-            # normalize the new_obs
-            if cfg.env.if_norm_temporal:
-                new_obs[i] = scaler.transform(generated_feature)
-            else:
-                # only normalize the cfg.dataset.features_name features
-                # select the features
-                # print("generated_feature.shape", generated_feature.shape)
-                generated_feature_norm=scaler.transform(generated_feature[:,:len(cfg.dataset.features_name)])
-                new_obs[i] = np.concatenate((generated_feature_norm,generated_feature[:,len(cfg.dataset.features_name):]),axis=1)
-
+        macro_epsilon = epsilon * noise
+        if hasattr(generator, "call_batch"):
+            generated_batch = generator.call_batch(timestamp, macro_epsilon)
+        else:
+            generated_batch = [generator.call(timestamp[i], macro_epsilon[i]) for i in range(num_envs)]
+        new_obs = build_augmented_observations(data, generated_batch, cfg, scaler)
         return (new_obs, noise)
     elif method == 'generator_adv_agent':
         data_tensor = torch.Tensor(data).to(device)
         noise = adv_agent(data_tensor).detach().cpu().numpy()
         noise_output = noise.copy()
-        if '0.3' in cfg.tag:
-            noise = noise * 0.3
+        macro_epsilon = epsilon * noise
         # generate new_obs with generator for each env
         num_envs = data.shape[0]
-        new_obs = np.zeros(data.shape)
-        for i in range(num_envs):
-            generated_data = generator.call(timestamp[i],noise[i])
-            # print("generated_data.shape", generated_data.shape)
-            # get the last data.shape[1] features
-            generated_feature = generated_data[-data.shape[1]:]
-            # get the tempral features form data
-            generated_feature = np.concatenate((generated_feature,data[i][:,len(cfg.dataset.features_name):]),axis=1)
-            # normalize the new_obs
-            if cfg.env.if_norm_temporal:
-                new_obs[i] = scaler.transform(generated_feature)
-            else:
-                # only normalize the cfg.dataset.features_name features
-                # select the features
-                generated_feature_norm=scaler.transform(generated_feature[:,:len(cfg.dataset.features_name)])
-                new_obs[i] = np.concatenate((generated_feature_norm,generated_feature[:,len(cfg.dataset.features_name):]),axis=1)
-
+        if hasattr(generator, "call_batch"):
+            generated_batch = generator.call_batch(timestamp, macro_epsilon)
+        else:
+            generated_batch = [generator.call(timestamp[i], macro_epsilon[i]) for i in range(num_envs)]
+        new_obs = build_augmented_observations(data, generated_batch, cfg, scaler)
         return (new_obs, noise_output)
     else:
         raise NotImplementedError
@@ -171,7 +162,7 @@ def compute_values(dones_b, masks_b, values_b, rewards_b, gamma):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Main')
-    parser.add_argument("--config", default=os.path.join(CURRENT, "configs", "CORN.py"), help="config file path")
+    parser.add_argument("--config", default=os.path.join(CURRENT, "configs", "CORN_aug.py"), help="config file path")
     parser.add_argument(
         '--cfg-options',
         nargs='+',
@@ -372,6 +363,11 @@ def main():
     if cfg.use_data_augmentation and (cfg.augmentation_method == 'generator_noise' or cfg.augmentation_method == 'generator_adv_agent'):
         model_path = getattr(cfg, 'gan_model_path', "generator/WAVENET_LAMBERT_GAN/output/dj30_v6")
         data_path = getattr(cfg, 'gan_data_path', None)
+        # ETF retrain branch: real price-volume correlation + log_returns
+        # feature reconstruction. Defaults preserve legacy Dow behaviour.
+        real_correlation = getattr(cfg, 'gan_real_correlation', False)
+        feature_method = getattr(cfg, 'gan_feature_method', 'derived')
+        checkpoint_epoch = getattr(cfg, 'gan_checkpoint_epoch', None)
         if 'GRT_GAN' in model_path:
             from generator.GRT_GAN.models.API import GeneratorAPI
             generator_backend = 'GRT_GAN'
@@ -384,15 +380,25 @@ def main():
         if data_path is not None:
             print(f"GAN data path: {data_path}")
         print(f"Generator backend: {generator_backend}")
+        print(f"GAN feature_method: {feature_method}, "
+              f"real_correlation: {real_correlation}, "
+              f"checkpoint_epoch: {checkpoint_epoch}")
         print(f"Using CUDA: {torch.cuda.is_available()}")
         generator_kwargs = dict(
             model_path=model_path,
             ticker_name=ticker_name,
             obs_features=cfg.dataset.features_name,
             temporal_features=cfg.dataset.temporals_name,
+            feature_method=feature_method,
+            real_correlation=real_correlation,
         )
         if generator_backend == 'GRT_GAN' and data_path is not None:
             generator_kwargs['data_path'] = data_path
+        if generator_backend == 'WAVENET_LAMBERT_GAN':
+            if data_path is not None:
+                generator_kwargs['data_dir'] = data_path
+            if checkpoint_epoch is not None:
+                generator_kwargs['checkpoint_epoch'] = checkpoint_epoch
         generator=GeneratorAPI(**generator_kwargs)
     else:
         generator=None
@@ -444,23 +450,25 @@ def main():
         random_action = random.random() < epsilon
         use_epsilon_greedy = (random.random() < cfg.nfsp_tau if cfg.use_nfsp else True)
         aug_obs_noise = 0
+        policy_obs = obs
+        use_augmentation = False
         if (not use_epsilon_greedy) or (not random_action):
             use_augmentation = (random.random() < cfg.augmentation_rate)
             if cfg.use_data_augmentation and use_augmentation:
                 original_state = random.getstate()
-                obs, aug_obs_noise = data_augmentation_function(obs, cfg, cfg.augmentation_method, agent, device, adv_agent, generator, timestamp=timestamp,scaler=scaler_ticker)
+                policy_obs, aug_obs_noise = data_augmentation_function(obs, cfg, cfg.augmentation_method, agent, device, adv_agent, generator, timestamp=timestamp,scaler=scaler_ticker)
                 random.setstate(original_state)
 
             if cfg.use_quantile_belief:
-                quantile_belief = get_quantile_belief(cfg, torch.Tensor(obs).to(device), 
+                quantile_belief = get_quantile_belief(cfg, torch.Tensor(policy_obs).to(device), 
                                                     agent.quantile_belief_network)
             else:
                 quantile_belief = None
             
             if not use_epsilon_greedy:
-                q_values = agent.q_network_nfsp(torch.Tensor(obs).to(device), quantile_belief)
+                q_values = agent.q_network_nfsp(torch.Tensor(policy_obs).to(device), quantile_belief)
             else:
-                q_values = agent.q_network(torch.Tensor(obs).to(device), quantile_belief)
+                q_values = agent.q_network(torch.Tensor(policy_obs).to(device), quantile_belief)
             actions = torch.argmax(q_values, dim=1).cpu().numpy()
         else:
             actions = np.array([train_envs.single_action_space.sample() for _ in range(cfg.num_envs)])

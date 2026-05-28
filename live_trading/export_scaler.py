@@ -9,8 +9,8 @@ Usage:
     # Export a single stock:
     python export_scaler.py --stock AAPL
 
-    # Export all Tier 1 stocks:
-    python export_scaler.py --stock PG MRK BA MCD JNJ MSFT KO NKE
+    # Export all WaveNet clean28 stocks:
+    python export_scaler.py --stock all
 """
 import argparse
 import os
@@ -27,6 +27,7 @@ sys.path.insert(0, DQN_DIR)
 from mmengine.config import Config                                   # noqa: E402
 from downstream_tasks.dataset import AugmentatedDatasetStocks as DS  # noqa: E402
 from environment import EnvironmentRET                               # noqa: E402
+from live_trading import config                                      # noqa: E402
 
 
 def export_scaler_for_stock(stock: str) -> str:
@@ -90,10 +91,11 @@ def export_scaler_for_stock(stock: str) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Export training scalers")
     parser.add_argument("--stock", nargs="+", default=["AAPL"],
-                        help="Ticker(s) to export scalers for")
+                        help="Ticker(s) to export scalers for, or 'all' for clean28")
     args = parser.parse_args()
 
-    for stock in args.stock:
+    stocks = config.CLEAN28_STOCKS if args.stock == ["all"] else args.stock
+    for stock in stocks:
         export_scaler_for_stock(stock)
 
 

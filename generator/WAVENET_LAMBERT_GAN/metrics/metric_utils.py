@@ -119,47 +119,41 @@ def cross_correlation_score(real_data, fake_data):
 # ---------------------------------------------------------------------------
 # Discriminative Score (sklearn MLP — no PyTorch)
 # ---------------------------------------------------------------------------
+# Thin adapter: delegates to the canonical implementation in
+# ``evaluation_metrics.compute_discriminative_score`` so the notebook and the
+# CLI evaluation script run byte-identical classifier logic.  The adapter only
+# translates the legacy ``epochs=`` kwarg to ``max_iter=`` and unpacks the
+# returned dict into a ``(accuracy, score)`` tuple to keep existing callers
+# (e.g. ``evaluate_gan.py``) working.
 
-def discriminative_score(real_data, fake_data, epochs=200):
+def discriminative_score(real_data, fake_data,
+                         hidden_layers=(64, 32), max_iter=300,
+                         test_size=0.2, seed=42, epochs=None):
     """Train an MLP classifier on real vs fake.
+
+    This is a thin wrapper around
+    :func:`evaluation_metrics.compute_discriminative_score` so that both
+    entry points share one implementation.
+
+    Args:
+        epochs: Legacy alias for ``max_iter`` (kept for CLI backward compat).
 
     Returns:
         (accuracy, |accuracy - 0.5|) — lower score → better GAN
     """
-    from sklearn.neural_network import MLPClassifier
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.metrics import accuracy_score
+    from .evaluation_metrics import compute_discriminative_score
 
-    real_flat = real_data.reshape(len(real_data), -1)
-    fake_flat = fake_data.reshape(len(fake_data), -1)
+    if epochs is not None:
+        max_iter = epochs
 
-    X = np.concatenate([real_flat, fake_flat], axis=0).astype(np.float32)
-    y = np.concatenate([np.ones(len(real_flat)), np.zeros(len(fake_flat))])
-
-    idx = np.random.permutation(len(X))
-    X, y = X[idx], y[idx]
-
-    split = int(0.8 * len(X))
-    X_train, X_test = X[:split], X[split:]
-    y_train, y_test = y[:split], y[split:]
-
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test = scaler.transform(X_test)
-
-    clf = MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=epochs,
-                        early_stopping=True, n_iter_no_change=15,
-                        validation_fraction=0.15, random_state=42)
-    clf.fit(X_train, y_train)
-
-    converged = clf.n_iter_ < epochs
-    print(f"  MLP trained {clf.n_iter_}/{epochs} iters ({'converged' if converged else 'hit max_iter'})")
-
-    acc = accuracy_score(y_test, clf.predict(X_test))
-
-    disc_score = np.abs(acc - 0.5)
-    return acc, disc_score
-
+    result = compute_discriminative_score(
+        real_data, fake_data,
+        hidden_layers=hidden_layers,
+        max_iter=max_iter,
+        test_size=test_size,
+        seed=seed,
+    )
+    return result['accuracy'], result['score']
 
 # ---------------------------------------------------------------------------
 # Predictive Score (train on fake, test on real — sklearn MLP)

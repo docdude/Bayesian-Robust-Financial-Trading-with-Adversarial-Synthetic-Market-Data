@@ -1,9 +1,10 @@
 """
 Feature engineering for live trading.
 
-Replicates module/processor/processor.py::cal_factor() exactly so that
-live OHLCV data produces the same 150 alpha features + 3 temporals the
-DQN agent was trained on.
+Replicates module/processor/processor.py::cal_factor() for real market bars so
+live OHLCV data produces the same 150 alpha features + 3 temporals the DQN
+agent sees from the processed training parquet. WaveNet Lambert inverse scaling
+is only used inside generator augmentation during training, not here.
 
 Input: a pandas DataFrame with columns [open, high, low, close, adj_close, volume]
        indexed by datetime.
@@ -21,7 +22,7 @@ def _my_rank(x: np.ndarray) -> float:
     return pd.Series(x).rank(pct=True).iloc[-1]
 
 
-def cal_factor(df: pd.DataFrame) -> pd.DataFrame:
+def cal_factor(df: pd.DataFrame, real_correlation: bool = False) -> pd.DataFrame:
     """Compute 150 alpha factors + temporals from OHLCV data.
 
     Parameters
@@ -29,6 +30,12 @@ def cal_factor(df: pd.DataFrame) -> pd.DataFrame:
     df : DataFrame
         Must contain columns: open, high, low, close, adj_close, volume.
         Index must be a DatetimeIndex.
+    real_correlation : bool
+        If True, compute genuine price-volume rolling correlation for
+        corr_*/cord_* (matches the ETF retrain branch). If False (default),
+        replicate the legacy training bug where corr_*/cord_* == 1.0, so live
+        inference stays consistent with Dow checkpoints whose scalers were fit
+        on the buggy values.
 
     Returns
     -------
@@ -117,18 +124,25 @@ def cal_factor(df: pd.DataFrame) -> pd.DataFrame:
         cols[f"cntd_{w}"] = cols[f"cntp_{w}"] - cols[f"cntn_{w}"]
 
     # ── Correlation features ───────────────────────────────────────────────
-    # NOTE: The original processor.py had a bug: it called
-    #   df1.corr(pairwise=df2)  where df2 is a Rolling object.
-    # This passes `other=None, pairwise=<rolling obj>` (truthy), computing
-    # self-correlation = 1.0 (NaN where window insufficient). The training
-    # data reflects this bug, and the StandardScaler was fit on it, so we
-    # must replicate the behaviour for consistent normalisation.
-    for w in windows:
-        cols[f"corr_{w}"] = df["close"].rolling(w).apply(lambda x: 1.0, raw=True)
-
-    close_ret = df["close"] / df["close"].shift(1)
-    for w in windows:
-        cols[f"cord_{w}"] = close_ret.rolling(w).apply(lambda x: 1.0, raw=True)
+    # See module/processor/processor.py: the legacy call computed
+    # self-correlation == 1.0 (a bug). The StandardScaler for Dow checkpoints
+    # was fit on those 1.0 values, so we replicate them by default. When
+    # real_correlation=True (ETF retrain branch) we compute the intended
+    # Alpha158 price-volume rolling correlation instead.
+    if real_correlation:
+        log_volume = np.log(df["volume"] + 1)
+        for w in windows:
+            cols[f"corr_{w}"] = df["close"].rolling(w).corr(log_volume)
+        close_chg = df["close"] / df["close"].shift(1)
+        vol_chg_log = np.log(df["volume"] / df["volume"].shift(1) + 1)
+        for w in windows:
+            cols[f"cord_{w}"] = close_chg.rolling(w).corr(vol_chg_log)
+    else:
+        for w in windows:
+            cols[f"corr_{w}"] = df["close"].rolling(w).apply(lambda x: 1.0, raw=True)
+        close_ret = df["close"] / df["close"].shift(1)
+        for w in windows:
+            cols[f"cord_{w}"] = close_ret.rolling(w).apply(lambda x: 1.0, raw=True)
 
     # ── Sum-positive / sum-negative return features ────────────────────────
     abs_ret1 = ret1.abs()

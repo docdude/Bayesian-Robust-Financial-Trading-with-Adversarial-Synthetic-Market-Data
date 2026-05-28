@@ -26,9 +26,10 @@ warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 class GeneratorAPI:
 
-    def __init__(self, model_path,ticker_name,obs_features,temporal_features,feature_method="derived", data_path=None):
+    def __init__(self, model_path,ticker_name,obs_features,temporal_features,feature_method="derived", data_path=None, real_correlation=False):
         """Load the model and data for inference"""
         self.feature_method = feature_method
+        self.real_correlation = real_correlation
 
         # Set the path to the output data folder relative to this script
         output_data_folder = data_path or os.path.join(os.path.dirname(__file__), '../../../datasets/output_data')
@@ -460,9 +461,16 @@ class GeneratorAPI:
             features[f"cntd_{w}"] = cntp - cntn
 
             # ---------- ROLLING CORRELATIONS -----------
-            #  Fix: pass the Series directly, NOT the rolling object
-            features[f"corr_{w}"] = close.rolling(w).corr(log_volume)
-            features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(vol_chg_log)
+            # Default replicates processor.cal_factor's legacy self-correlation
+            # == 1.0 bug so generated features stay on the training manifold.
+            # real_correlation=True (ETF retrain branch) computes the intended
+            # Alpha158 price-volume correlation.
+            if self.real_correlation:
+                features[f"corr_{w}"] = close.rolling(w).corr(log_volume)
+                features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(vol_chg_log)
+            else:
+                features[f"corr_{w}"] = close.rolling(w).corr(pairwise=log_volume.rolling(w))
+                features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(pairwise=vol_chg_log.rolling(w))
 
             # ---------- SUMP / SUMN / SUMD -----------
             sum_abs = abs_ret1.rolling(w).sum()

@@ -1,16 +1,16 @@
 root = None
-workdir = "downstream_tasks/rl/trading/workdir/exp/trading/UGA/dqn"
-tag = "exp001"
+workdir = "downstream_tasks/rl/trading/workdir/exp/trading/SPY/dqn"
+tag = "aug_wavenet_gen_adv"
 save_path = "saved_model"
 level = "day"
-select_stock = "UGA"
+select_stock = "SPY"
 
 train_start_date = "2000-01-01"
-train_end_date = "2017-12-31"
-valid_start_date = "2018-01-01"
-valid_end_date = "2020-12-31"
-test_start_date = "2021-01-01"
-test_end_date = "2024-11-01"
+train_end_date = "2019-12-31"
+valid_start_date = "2020-01-01"
+valid_end_date = "2021-12-31"
+test_start_date = "2022-01-01"
+test_end_date = "2023-12-31"
 timestamps = 30
 num_features = 153  # num features name (150) + num temporals name (3)
 temporals_name = ['day', 'weekday', 'month']
@@ -25,7 +25,7 @@ policy_learning_rate = 2.5e-4  # ( 1e-6, 2.5e-4)     optuna选
 start_e = 1.0
 end_e = 0.05
 num_envs = 4
-total_timesteps = int(1e6)  # int(2e5)
+total_timesteps = int(4e5)
 check_steps = int(10000)
 exploration_fraction = 0.5
 learning_starts = int(10000)  # 1000
@@ -39,6 +39,14 @@ seed = 10
 
 # data augmentation
 use_data_augmentation = True
+# ETF retrain branch: point at the ETF-trained WaveNet Lambert GAN and use the
+# real price-volume correlation + log_returns feature reconstruction so the
+# generated augmentation matches the regenerated ETF parquet feature semantics.
+gan_model_path = "generator/WAVENET_LAMBERT_GAN/output/futures_etf_lambert"
+gan_data_path = "datasets/output_data_lambert_future_etfs"
+gan_feature_method = "log_returns"
+gan_real_correlation = True
+gan_checkpoint_epoch = 4000
 augmentation_method = 'generator_adv_agent'   # ['random', 'min_q', 'adv_agent', 'generator_noise', 'generator_adv_agent']
 augmentation_rate = 0.1
 epsilon = 0.1

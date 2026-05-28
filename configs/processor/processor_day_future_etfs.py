@@ -15,11 +15,14 @@ processor = dict(
         ]
     },
     start_date = "2000-01-01",
-    end_date = "2024-01-01",
+    end_date = "2026-01-01",
     interval = "1d",
     stocks_path = "configs/_asset_list_/future_etfs.txt",
     workdir = workdir,
-    tag = tag
+    tag = tag,
+    # ETF retrain branch: compute real price-volume rolling correlation
+    # (corr_*/cord_*) instead of the legacy self-correlation == 1.0 bug.
+    real_correlation = True
 )
 
 

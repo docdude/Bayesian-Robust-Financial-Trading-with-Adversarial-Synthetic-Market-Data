@@ -75,6 +75,7 @@ class DQNAdapter:
         timestamps: int = 30,
         use_nfsp: bool = True,
         use_quantile_belief: bool = True,
+        real_correlation: bool = False,
     ):
         self.agent = agent
         self.scaler = scaler
@@ -82,6 +83,7 @@ class DQNAdapter:
         self.timestamps = timestamps
         self.use_nfsp = use_nfsp
         self.use_quantile_belief = use_quantile_belief
+        self.real_correlation = real_correlation
 
     # ── Factory ────────────────────────────────────────────────────────────
 
@@ -103,7 +105,7 @@ class DQNAdapter:
         arch            : dict overriding default architecture params.
                           Keys: input_dim, timestamps, embed_dim, depth,
                           action_dim, temporals_name, use_quantile_belief,
-                          quantile_heads_num, use_nfsp.
+                          quantile_heads_num, use_nfsp, real_correlation.
         """
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -139,6 +141,7 @@ class DQNAdapter:
             timestamps=cfg["timestamps"],
             use_nfsp=cfg["use_nfsp"],
             use_quantile_belief=cfg["use_quantile_belief"],
+            real_correlation=cfg.get("real_correlation", False),
         )
 
     # ── Observation building ───────────────────────────────────────────────
@@ -156,7 +159,7 @@ class DQNAdapter:
         -------
         ndarray of shape (timestamps, 153).
         """
-        feat_df = cal_factor(bars_df)
+        feat_df = cal_factor(bars_df, real_correlation=self.real_correlation)
 
         # Select the 150 feature columns (no temporals) for scaling
         feature_cols = FEATURES_NAME

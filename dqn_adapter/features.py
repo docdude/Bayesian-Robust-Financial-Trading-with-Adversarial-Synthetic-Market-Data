@@ -52,12 +52,17 @@ def _my_rank(x: np.ndarray) -> float:
     return pd.Series(x).rank(pct=True).iloc[-1]
 
 
-def cal_factor(df: pd.DataFrame) -> pd.DataFrame:
+def cal_factor(df: pd.DataFrame, real_correlation: bool = False) -> pd.DataFrame:
     """Compute 150 alpha factors + temporals from OHLCV data.
 
     Parameters
     ----------
     df : DataFrame with columns: open, high, low, close, adj_close, volume.
+    real_correlation : bool
+        If True, compute genuine price-volume rolling correlation for
+        corr_*/cord_* (ETF retrain branch). If False (default), replicate the
+        legacy training bug where corr_*/cord_* == 1.0, keeping parity with
+        Dow checkpoints whose scalers were fit on the buggy values.
 
     Returns
     -------
@@ -124,12 +129,23 @@ def cal_factor(df: pd.DataFrame) -> pd.DataFrame:
     for w in windows:
         cols[f"cntd_{w}"] = cols[f"cntp_{w}"] - cols[f"cntn_{w}"]
 
-    # Correlation features: training bug replication (always 1.0)
-    for w in windows:
-        cols[f"corr_{w}"] = df["close"].rolling(w).apply(lambda x: 1.0, raw=True)
-    close_ret = df["close"] / df["close"].shift(1)
-    for w in windows:
-        cols[f"cord_{w}"] = close_ret.rolling(w).apply(lambda x: 1.0, raw=True)
+    # Correlation features. Default replicates the legacy training bug
+    # (corr_*/cord_* == 1.0); real_correlation=True uses the intended
+    # Alpha158 price-volume rolling correlation (ETF retrain branch).
+    if real_correlation:
+        log_volume = np.log(df["volume"] + 1)
+        for w in windows:
+            cols[f"corr_{w}"] = df["close"].rolling(w).corr(log_volume)
+        close_chg = df["close"] / df["close"].shift(1)
+        vol_chg_log = np.log(df["volume"] / df["volume"].shift(1) + 1)
+        for w in windows:
+            cols[f"cord_{w}"] = close_chg.rolling(w).corr(vol_chg_log)
+    else:
+        for w in windows:
+            cols[f"corr_{w}"] = df["close"].rolling(w).apply(lambda x: 1.0, raw=True)
+        close_ret = df["close"] / df["close"].shift(1)
+        for w in windows:
+            cols[f"cord_{w}"] = close_ret.rolling(w).apply(lambda x: 1.0, raw=True)
 
     abs_ret1 = ret1.abs()
     pos_ret1 = ret1.clip(lower=0)

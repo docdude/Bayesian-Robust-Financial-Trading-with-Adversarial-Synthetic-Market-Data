@@ -858,7 +858,7 @@ def compute_discriminative_score(real_data, synthetic_data,
     from sklearn.model_selection import train_test_split
     from sklearn.neural_network import MLPClassifier
     from sklearn.metrics import accuracy_score
-
+    from sklearn.preprocessing import StandardScaler
     real = np.asarray(real_data)
     synth = np.asarray(synthetic_data)
 
@@ -874,13 +874,17 @@ def compute_discriminative_score(real_data, synthetic_data,
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=seed, stratify=y
     )
-
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
     clf = MLPClassifier(hidden_layer_sizes=hidden_layers,
                         max_iter=max_iter, random_state=seed)
     clf.fit(X_train, y_train)
     acc = accuracy_score(y_test, clf.predict(X_test))
 
     return {'accuracy': float(acc), 'score': float(abs(0.5 - acc))}
+
+
 
 
 # =====================================================================

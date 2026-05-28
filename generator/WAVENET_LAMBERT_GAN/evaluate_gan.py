@@ -100,22 +100,40 @@ def load_real_data(data_dir, train_tickers=None, expected_feature_dim=None):
 # ---------------------------------------------------------------------------
 
 def generate_synthetic(generator, real_stock, real_macro, n_samples,
-                       seq_len, latent_dim, batch_size=256, full_noise=False):
+                       seq_len, latent_dim, batch_size=256, full_noise=False,
+                       idx=None, rng=None):
     """Generate synthetic sequences.
 
     Args:
         full_noise: If True, feed pure Gaussian noise (no real prefix).
                     If False, use half-real/half-noise (training strategy).
+        idx: Optional pre-computed window indices for conditioning. If None,
+             a random subset of size ``n_samples`` is drawn. Returned alongside
+             the synthetic array so callers can pair each fake window with the
+             same real window used for conditioning.
+        rng: Optional ``np.random.Generator``.  If None, falls back to the
+             legacy global ``np.random`` state (kept for backward compat).
+
+    Returns
+    -------
+    synthetic : ndarray (n_samples, seq_len, feature_dim)
+    idx       : ndarray (n_samples,) — windows selected from ``real_stock``
     """
     half = seq_len // 2
-    idx = np.random.choice(len(real_stock), n_samples, replace=n_samples > len(real_stock))
+    _choice = rng.choice if rng is not None else np.random.choice
+    _randn = (lambda *s: rng.standard_normal(s).astype(np.float32)) \
+        if rng is not None else (lambda *s: np.random.randn(*s).astype(np.float32))
+
+    if idx is None:
+        idx = _choice(len(real_stock), n_samples,
+                      replace=n_samples > len(real_stock))
     selected_stock = real_stock[idx]
     selected_macro = real_macro[idx]
 
     if full_noise:
-        z = np.random.randn(n_samples, seq_len, latent_dim).astype(np.float32)
+        z = _randn(n_samples, seq_len, latent_dim)
     else:
-        noise = np.random.randn(n_samples, half, latent_dim).astype(np.float32)
+        noise = _randn(n_samples, half, latent_dim)
         z = np.concatenate([
             selected_stock[:, :half, :latent_dim],
             noise,
@@ -129,7 +147,7 @@ def generate_synthetic(generator, real_stock, real_macro, n_samples,
                       training=False).numpy()
         )
     synthetic = np.concatenate(parts, axis=0)
-    return synthetic
+    return synthetic, idx
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +195,12 @@ def main():
     parser.add_argument('--data_dir', type=str,
                         default='datasets/output_data_lambert',
                         help='Path to pre-processed NPY data directory')
-    parser.add_argument('--n_samples', type=int, default=5000,
-                        help='Number of synthetic samples to generate for evaluation')
+    parser.add_argument('--n_samples', type=int, default=500,
+                        help='Number of synthetic samples to generate for evaluation '
+                             '(matches notebook default of 500)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for window selection, latent noise, and '
+                             'classifier splits.  Set to match the notebook.')
     parser.add_argument('--disc_epochs', type=int, default=200,
                         help='Max iterations for discriminative score MLP')
     parser.add_argument('--pred_epochs', type=int, default=200,
@@ -196,10 +218,21 @@ def main():
     parser.add_argument('--train_tickers', type=str, default=None,
                         help='Comma-separated ticker list the generator was trained on '
                              '(order matters). If omitted, all dataset tickers are used.')
+    parser.add_argument('--checkpoint_epoch', type=int, default=None,
+                        help='Evaluate a specific checkpoint (loads '
+                             'checkpoints/generator_epoch{N}.keras instead of '
+                             'generator.keras). If omitted, uses the final generator.keras.')
     args = parser.parse_args()
 
+    # Seed all RNG sources so CLI results match the notebook.
+    import random
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    tf.random.set_seed(args.seed)
+    rng = np.random.default_rng(args.seed)
+
     model_dir = args.model_dir
-    print(f"Evaluating WaveNet Lambert GAN at: {model_dir}\n")
+    print(f"Evaluating WaveNet Lambert GAN at: {model_dir}  (seed={args.seed})\n")
 
     # Load config
     with open(os.path.join(model_dir, 'config.pkl'), 'rb') as f:
@@ -232,19 +265,33 @@ def main():
     except Exception as _e:
         print(f"  (channel-name registration skipped: {_e})")
 
-    # Load generator
+    # Load generator (final by default, or a specific checkpoint if requested)
     print("\nLoading generator...")
-    generator = tf.keras.models.load_model(os.path.join(model_dir, 'generator.keras'))
+    if args.checkpoint_epoch is not None:
+        generator_path = os.path.join(
+            model_dir, 'checkpoints',
+            f'generator_epoch{args.checkpoint_epoch}.keras')
+        if not os.path.exists(generator_path):
+            raise FileNotFoundError(
+                f"Checkpoint not found: {generator_path}")
+        print(f"  Using checkpoint epoch {args.checkpoint_epoch}")
+    else:
+        generator_path = os.path.join(model_dir, 'generator.keras')
+    print(f"  Generator: {generator_path}")
+    generator = tf.keras.models.load_model(generator_path)
 
     # Match sample count
     n_eval = min(args.n_samples, len(stock_data))
-    real_sequences = stock_data[:n_eval]
-    print(f"Real sequences: {real_sequences.shape}")
 
     # ---- Mode 1: Standard half-real/half-noise (always runs) ----
     print(f"\nGenerating {n_eval} synthetic sequences (half-real/half-noise)...")
-    fake_sequences = generate_synthetic(
-        generator, stock_data, macro_data, n_eval, seq_len, latent_dim)
+    fake_sequences, eval_idx = generate_synthetic(
+        generator, stock_data, macro_data, n_eval, seq_len, latent_dim,
+        rng=rng)
+    # Pair each fake window with the SAME real window used for conditioning,
+    # so every metric compares apples-to-apples.
+    real_sequences = stock_data[eval_idx]
+    print(f"Real sequences:      {real_sequences.shape}")
     print(f"Synthetic sequences: {fake_sequences.shape}")
 
     _run_eval(real_sequences, fake_sequences, args,
@@ -264,9 +311,10 @@ def main():
     # ---- Mode 3: Full noise (no real prefix) ----
     if args.full_noise:
         print(f"\nGenerating {n_eval} synthetic sequences (full noise, no real prefix)...")
-        fake_full_noise = generate_synthetic(
+        # Reuse the same eval_idx so real/fake populations match Mode 1.
+        fake_full_noise, _ = generate_synthetic(
             generator, stock_data, macro_data, n_eval, seq_len, latent_dim,
-            full_noise=True)
+            full_noise=True, idx=eval_idx, rng=rng)
         print(f"Full-noise synthetic: {fake_full_noise.shape}")
         save_dir_fn = os.path.join(model_dir, 'eval_full_noise')
         os.makedirs(save_dir_fn, exist_ok=True)

@@ -44,7 +44,8 @@ class GeneratorAPI:
     """Inference wrapper for a trained WaveNet Lambert GAN (GRT_GAN-compatible)."""
 
     def __init__(self, model_path, ticker_name, obs_features, temporal_features,
-                 feature_method="derived", data_dir=None):
+                 feature_method="derived", data_dir=None, checkpoint_epoch=None,
+                 real_correlation=False):
         """Load the model and NPY data for inference.
 
         Parameters
@@ -65,8 +66,18 @@ class GeneratorAPI:
             Path to the preprocessed NPY data folder. If omitted, uses the
             model config's data_dir when present, then falls back to the legacy
             derived DJ30 data directory.
+        checkpoint_epoch : int or None
+            If set, load checkpoints/generator_epoch{N}.keras instead of the
+            final generator.keras. Lets you pin a specific checkpoint without
+            copying files.
+        real_correlation : bool
+            If True, compute genuine price-volume rolling correlation for
+            corr_*/cord_* (ETF retrain branch). If False (default), replicate
+            the legacy processor self-correlation == 1.0 so generated features
+            stay on the same manifold as Dow checkpoints.
         """
         self.feature_method = feature_method
+        self.real_correlation = real_correlation
         self.ticker_name = ticker_name
         self.obs_features = obs_features
         self.temporal_features = temporal_features
@@ -148,12 +159,21 @@ class GeneratorAPI:
         print(f"GAN date range: {self._date_array[0]} → {self._date_array[-1]}"
               f"  ({len(self._date_array)} dates)")
 
-        self.generator = tf.keras.models.load_model(
-            os.path.join(model_path, 'generator.keras'))
+        if checkpoint_epoch is not None:
+            generator_path = os.path.join(
+                model_path, 'checkpoints',
+                f'generator_epoch{checkpoint_epoch}.keras')
+            if not os.path.exists(generator_path):
+                raise FileNotFoundError(
+                    f"Checkpoint not found: {generator_path}")
+        else:
+            generator_path = os.path.join(model_path, 'generator.keras')
+        self.generator = tf.keras.models.load_model(generator_path)
 
         print(f"WaveNet Lambert GAN loaded: ticker={ticker_name}, "
               f"seq_len={self.seq_len}, feature_dim={self.feature_dim}, "
-              f"macro_dim={self.macro_dim}, data_dir={self.data_dir}")
+              f"macro_dim={self.macro_dim}, data_dir={self.data_dir}, "
+              f"generator={os.path.basename(generator_path)}")
 
     # ------------------------------------------------------------------
     # Model inference (matches GRT_GAN's half-real / half-noise strategy)
@@ -360,9 +380,16 @@ class GeneratorAPI:
             features[f"cntn_{w}"] = cntn
             features[f"cntd_{w}"] = cntp - cntn
 
-            # Match processor.cal_factor's pairwise rolling call so generated features stay on the training manifold.
-            features[f"corr_{w}"] = close.rolling(w).corr(pairwise=log_volume.rolling(w))
-            features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(pairwise=vol_chg_log.rolling(w))
+            # corr_*/cord_*: default replicates processor.cal_factor's legacy
+            # self-correlation == 1.0 bug so generated features stay on the
+            # training manifold. real_correlation=True (ETF retrain branch)
+            # computes the intended Alpha158 price-volume correlation.
+            if self.real_correlation:
+                features[f"corr_{w}"] = close.rolling(w).corr(log_volume)
+                features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(vol_chg_log)
+            else:
+                features[f"corr_{w}"] = close.rolling(w).corr(pairwise=log_volume.rolling(w))
+                features[f"cord_{w}"] = close_chg_ratio.rolling(w).corr(pairwise=vol_chg_log.rolling(w))
 
             sum_abs = abs_ret1.rolling(w).sum()
             sum_pos = pos_ret1.rolling(w).sum()

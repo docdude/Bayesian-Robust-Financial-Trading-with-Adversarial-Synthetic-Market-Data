@@ -10,41 +10,157 @@ ROOT = str(Path(__file__).resolve().parents[1])
 # Load .env from project root (won't overwrite existing env vars)
 load_dotenv(os.path.join(ROOT, ".env"))
 
-# ── Portfolio: Tier 1 stocks with best checkpoint per ticker ───────────────
-# Each entry: ticker → (checkpoint_number, test_sharpe)
-# Selected by best val_SR from sweep; only tickers with test_SR >= 1.0
-TIER1_STOCKS = {
-    "PG":   {"ckpt": 2,  "test_SR": 2.58},
-    "MRK":  {"ckpt": 2,  "test_SR": 1.90},
-    "BA":   {"ckpt": 32, "test_SR": 1.59},
-    "MCD":  {"ckpt": 9,  "test_SR": 1.55},
-    "JNJ":  {"ckpt": 4,  "test_SR": 1.51},
-    "MSFT": {"ckpt": 18, "test_SR": 1.51},
-    "KO":   {"ckpt": 10, "test_SR": 1.35},
-    "NKE":  {"ckpt": 12, "test_SR": 1.11},
+# ── Portfolio: WaveNet clean28 deployment candidates ───────────────────────
+# The live inference path consumes real market bars and the DQN checkpoint.
+# Lambert scaling and WaveNet feature reconstruction happen inside generator
+# augmentation during training, not during broker-side live inference.
+WAVENET_LIVE_UNIVERSE = [
+    "AAPL", "AMGN", "AXP", "BA", "CAT", "CSCO", "CVX", "DIS",
+    "GS", "HD", "HON", "IBM", "INTC", "JNJ", "JPM", "KO", "MCD",
+    "MMM", "MRK", "MSFT", "NKE", "PG", "SHW", "TRV", "UNH", "VZ",
+    "WBA", "WMT",
+]
+
+# Backward-compatible name used by export_scaler.py --stock all. This remains
+# the full corrected artifact universe, not the active trading basket.
+CLEAN28_STOCKS = WAVENET_LIVE_UNIVERSE
+
+# Default active paper-trading basket. These are the names that passed the
+# holdout Candidate gate in CHECKPOINT_SELECTION.md.
+PAPER_TRADING_CANDIDATES = ["AXP", "JPM", "MRK", "PG"]
+
+DEFAULT_MODEL_TAG_TEMPLATE = "{ticker}_aug_wavenet_dj30_v6_full"
+MODEL_TAG_TEMPLATE = os.environ.get(
+    "LIVE_TRADING_MODEL_TAG_TEMPLATE",
+    DEFAULT_MODEL_TAG_TEMPLATE,
+)
+
+# Direct validation-selected checkpoints from the corrected WaveNet Lambert
+# full-run sweeps. See live_trading/CHECKPOINT_SELECTION.md.
+BEST_CHECKPOINTS = {
+    "AAPL": 2,
+    "AMGN": 38,
+    "AXP": 9,
+    "BA": 14,
+    "CAT": 15,
+    "CSCO": 4,
+    "CVX": 29,
+    "DIS": 1,
+    "GS": 3,
+    "HD": 2,
+    "HON": 1,
+    "IBM": 40,
+    "INTC": 12,
+    "JNJ": 40,
+    "JPM": 31,
+    "KO": 35,
+    "MCD": 34,
+    "MMM": 32,
+    "MRK": 25,
+    "MSFT": 28,
+    "NKE": 2,
+    "PG": 29,
+    "SHW": 19,
+    "TRV": 20,
+    "UNH": 1,
+    "VZ": 40,
+    "WBA": 9,
+    "WMT": 28,
 }
 
-def _ckpt_path(ticker: str, ckpt: int) -> str:
-    return os.path.join(
-        ROOT,
-        f"downstream_tasks/rl/trading/workdir/exp/trading/{ticker}/dqn/exp001_aug/saved_model/{ckpt}.pth",
+
+def _model_tag(ticker: str) -> str:
+    return os.environ.get(
+        f"LIVE_TRADING_{ticker}_TAG",
+        MODEL_TAG_TEMPLATE.format(ticker=ticker),
     )
+
+
+def _ckpt_path(ticker: str, ckpt: int, tag: str | None = None) -> str:
+    tag = tag or _model_tag(ticker)
+    rel_path = os.path.join(
+        "downstream_tasks", "rl", "trading", "workdir", "exp",
+        "trading", ticker, "dqn", tag, "saved_model", f"{ckpt}.pth",
+    )
+    return os.path.join(ROOT, rel_path)
+
+
+def _saved_model_dir(ticker: str, tag: str | None = None) -> Path:
+    tag = tag or _model_tag(ticker)
+    return (
+        Path(ROOT) / "downstream_tasks" / "rl" / "trading" / "workdir"
+        / "exp" / "trading" / ticker / "dqn" / tag / "saved_model"
+    )
+
+
+def _resolve_checkpoint(ticker: str) -> tuple[int, str]:
+    try:
+        return BEST_CHECKPOINTS[ticker], "validation_best_sharpe"
+    except KeyError as exc:
+        raise KeyError(
+            f"No validation-selected checkpoint configured for {ticker}"
+        ) from exc
+
 
 def _scaler_path(ticker: str) -> str:
     return os.path.join(ROOT, f"live_trading/artifacts/{ticker}_scaler.pkl")
 
+
+def _active_stocks() -> list[str]:
+    active_override = os.environ.get("LIVE_TRADING_ACTIVE_STOCKS")
+    if not active_override:
+        return PAPER_TRADING_CANDIDATES
+    if active_override.strip().lower() == "all":
+        return WAVENET_LIVE_UNIVERSE
+    return [
+        ticker.strip().upper()
+        for ticker in active_override.split(",")
+        if ticker.strip()
+    ]
+
+
+ACTIVE_STOCKS = _active_stocks()
+
+
+# Direct deployment defaults: validation-selected best checkpoint per ticker.
+DEPLOYMENT_STOCKS = {}
+for _ticker in ACTIVE_STOCKS:
+    _ckpt, _selection = _resolve_checkpoint(_ticker)
+    DEPLOYMENT_STOCKS[_ticker] = {
+        "ckpt": _ckpt,
+        "selection": _selection,
+    }
+
+# Backward-compatible alias for older imports/scripts.
+TIER1_STOCKS = DEPLOYMENT_STOCKS
+
+
 # Build per-ticker config dict used by the trader
 PORTFOLIO = {}
-for _ticker, _info in TIER1_STOCKS.items():
+for _ticker, _info in DEPLOYMENT_STOCKS.items():
+    _tag = _model_tag(_ticker)
     PORTFOLIO[_ticker] = {
-        "checkpoint_path": _ckpt_path(_ticker, _info["ckpt"]),
+        "checkpoint_path": _ckpt_path(_ticker, _info["ckpt"], _tag),
         "scaler_path": _scaler_path(_ticker),
+        "checkpoint": _info["ckpt"],
+        "model_tag": _tag,
+        "selection": _info["selection"],
     }
 
 # Legacy single-stock config (still used by single-stock mode)
-SYMBOL = "AAPL"
-CHECKPOINT_PATH = _ckpt_path("AAPL", 12)
-SCALER_PATH = _scaler_path("AAPL")
+SYMBOL = os.environ.get("LIVE_TRADING_SYMBOL", "AAPL")
+_single_info = DEPLOYMENT_STOCKS.get(
+    SYMBOL,
+    {
+        "ckpt": _resolve_checkpoint(SYMBOL)[0],
+        "selection": "validation_best_sharpe",
+    },
+)
+CHECKPOINT_PATH = os.environ.get(
+    "LIVE_TRADING_CHECKPOINT_PATH",
+    _ckpt_path(SYMBOL, _single_info["ckpt"]),
+)
+SCALER_PATH = os.environ.get("LIVE_TRADING_SCALER_PATH", _scaler_path(SYMBOL))
 
 # ── Agent architecture (must match training config AAPL_aug.py) ───────────
 INPUT_DIM = 153          # 150 features + 3 temporals
@@ -57,8 +173,13 @@ USE_QUANTILE_BELIEF = True
 QUANTILE_HEADS = [0.05, 0.25, 0.5, 0.75, 0.95]
 USE_NFSP = True
 
+# Whether corr_*/cord_* features use genuine price-volume correlation.
+# Keep False for legacy Dow checkpoints (scalers fit on the corr==1.0 bug).
+# Set True (e.g. via env) when deploying ETF models from the retrain branch.
+REAL_CORRELATION = os.environ.get(
+    "LIVE_TRADING_REAL_CORRELATION", "0") == "1"
+
 # ── Trading parameters ────────────────────────────────────────────────────
-SYMBOL = "AAPL"
 INITIAL_CAPITAL = 100_000.0       # paper-trading starting capital
 TRANSACTION_COST_PCT = 1e-3       # must match training
 POSITION_LOWERBOUND = -1          # allow short
@@ -78,7 +199,10 @@ MAX_SINGLE_STOCK_PCT = 0.15       # never more than 15% in one name
 MIN_CASH_RESERVE_PCT = 0.05       # keep 5% cash buffer
 
 # Maximum trades per cycle (prevents runaway loops).
-MAX_TRADES_PER_CYCLE = 16         # 8 stocks × 2 (close + open) max
+MAX_TRADES_PER_CYCLE = int(os.environ.get(
+    "LIVE_TRADING_MAX_TRADES_PER_CYCLE",
+    max(16, 2 * len(PORTFOLIO)),
+))
 
 # Data staleness: reject bars older than this many calendar days.
 MAX_DATA_STALENESS_DAYS = 5       # accounts for weekends + holidays
@@ -88,7 +212,7 @@ MAX_DATA_STALENESS_DAYS = 5       # accounts for weekends + holidays
 MAX_GROSS_EXPOSURE = 1.5
 
 # ── Feature engineering ───────────────────────────────────────────────────
-# Minimum bars needed: 60 (max rolling window) + 30 (observation window) + margin
+# Minimum bars needed: 60 max rolling + 30 observation + margin.
 MIN_HISTORY_BARS = 120
 ROLLING_WINDOWS = [5, 10, 20, 30, 60]
 

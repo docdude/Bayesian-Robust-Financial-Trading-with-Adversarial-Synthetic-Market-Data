@@ -3,7 +3,7 @@
 Alpaca paper-trading bot for a portfolio of trained DQN agents.
 
 Supports two modes:
-  --portfolio  : Trades all Tier 1 stocks with equal-weight allocation (default)
+    --portfolio  : Trades the configured WaveNet portfolio (default)
   --symbol XYZ : Trades a single stock (legacy mode)
 
 Runs once per trading day (designed to be invoked by cron / systemd / scheduler).
@@ -64,6 +64,7 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("alpaca_trader")
+DRY_RUN = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -200,7 +201,7 @@ def build_observation(
 
     Returns ndarray of shape (timestamps, 153).
     """
-    feat_df = cal_factor(bars_df)
+    feat_df = cal_factor(bars_df, real_correlation=config.REAL_CORRELATION)
 
     # Select exactly the 150 feature columns + 3 temporals
     features_cols = config.FEATURES_NAME
@@ -326,6 +327,10 @@ def get_position(symbol: str) -> dict | None:
 def close_position(symbol: str) -> None:
     """Liquidate the entire position for *symbol*."""
     global _trade_count
+    if DRY_RUN:
+        _trade_count += 1
+        log.info("[DRY-RUN] Would close position for %s (trade #%d)", symbol, _trade_count)
+        return
     try:
         _alpaca_delete(f"/v2/positions/{symbol}")
         _trade_count += 1
@@ -361,31 +366,38 @@ def submit_market_order(symbol: str, qty: int, side: str) -> dict | None:
     if check_trade_cap():
         return None
 
-    # Cash check for buy orders
-    if side == "buy":
+    # Cash check for buy orders. The training env sizes all-in positions with
+    # a (1 + transaction_cost_pct) denominator, so use the same buffer here.
+    if side == "buy" and not DRY_RUN:
         available = get_available_cash()
         price = _get_last_price(symbol)
-        cost = qty * price
-        if cost > available:
+        estimated_cost = qty * price * (1 + config.TRANSACTION_COST_PCT)
+        if estimated_cost > available:
             old_qty = qty
-            qty = int(available / price)
+            qty = _target_qty_for_allocation(available, price)
             log.warning(
-                "CASH CHECK: %s buy %d shares ($%.0f) > available $%.0f. "
+                "CASH CHECK: %s buy %d shares ($%.0f incl cost) > available $%.0f. "
                 "Reduced to %d shares.",
-                symbol, old_qty, cost, available, qty,
+                symbol, old_qty, estimated_cost, available, qty,
             )
             if qty <= 0:
                 log.warning("CASH CHECK: cannot buy any %s, skipping order.", symbol)
                 return None
 
     # Gross exposure check
-    exposure = get_gross_exposure()
-    if exposure >= config.MAX_GROSS_EXPOSURE:
+    exposure = get_gross_exposure() if not DRY_RUN else 0.0
+    if not DRY_RUN and exposure >= config.MAX_GROSS_EXPOSURE:
         log.warning(
             "EXPOSURE LIMIT: gross exposure=%.2f >= limit %.2f. Skipping %s %s %d.",
             exposure, config.MAX_GROSS_EXPOSURE, side, symbol, qty,
         )
         return None
+
+    if DRY_RUN:
+        _trade_count += 1
+        log.info("[DRY-RUN] Would submit order: %s %d %s (trade #%d)",
+                 side, qty, symbol, _trade_count)
+        return {"id": "dry-run", "symbol": symbol, "qty": str(abs(qty)), "side": side}
 
     body = {
         "symbol": symbol,
@@ -411,6 +423,13 @@ def submit_market_order(symbol: str, qty: int, side: str) -> dict | None:
     log.info("Order submitted: %s %d %s → %s (trade #%d)",
              side, qty, symbol, resp.get("id", "?"), _trade_count)
     return resp
+
+
+def _target_qty_for_allocation(allocated_equity: float, price: float) -> int:
+    """Size like EnvironmentRET.trade(): notional divided by price plus fee."""
+    if price <= 0:
+        return 0
+    return int(allocated_equity / (price * (1 + config.TRANSACTION_COST_PCT)))
 
 
 def execute_action(action_label: str, symbol: str, allocation_pct: float = 1.0) -> None:
@@ -443,8 +462,9 @@ def execute_action(action_label: str, symbol: str, allocation_pct: float = 1.0) 
         # Close any existing short first
         if current_qty != 0:
             close_position(symbol)
-            time.sleep(1)
-        target_qty = int(allocated_equity / last_price)
+            if not DRY_RUN:
+                time.sleep(1)
+        target_qty = _target_qty_for_allocation(allocated_equity, last_price)
         if target_qty > 0:
             submit_market_order(symbol, target_qty, "buy")
 
@@ -455,8 +475,9 @@ def execute_action(action_label: str, symbol: str, allocation_pct: float = 1.0) 
         # Close any existing long first
         if current_qty != 0:
             close_position(symbol)
-            time.sleep(1)
-        target_qty = int(allocated_equity / last_price)
+            if not DRY_RUN:
+                time.sleep(1)
+        target_qty = _target_qty_for_allocation(allocated_equity, last_price)
         if target_qty > 0:
             submit_market_order(symbol, target_qty, "sell")
 
@@ -598,7 +619,7 @@ def run_portfolio() -> None:
         current_side = pos["side"] if pos else None
 
         if action == "CLOSE":
-            if pos and int(pos["qty"]) > 0:
+            if pos and int(float(pos["qty"])) != 0:
                 phase1_symbols.append(symbol)
         elif action == "LONG":
             if current_side == "long":
@@ -624,7 +645,9 @@ def run_portfolio() -> None:
         close_position(symbol)
 
     # Wait until all Phase 1 closes have settled (position actually gone)
-    if phase1_symbols:
+    if phase1_symbols and DRY_RUN:
+        log.info("  [DRY-RUN] Skipping settlement wait for Phase 1 closes")
+    elif phase1_symbols:
         log.info("  Waiting for Phase 1 closes to settle...")
         _wait_positions_flat(phase1_symbols, timeout=30)
 
@@ -647,7 +670,7 @@ def run_portfolio() -> None:
         equity = float(account["equity"])
         effective_alloc = min(allocation_pct, config.MAX_SINGLE_STOCK_PCT)
         allocated_equity = equity * effective_alloc
-        target_qty = int(allocated_equity / last_price)
+        target_qty = _target_qty_for_allocation(allocated_equity, last_price)
 
         if target_qty <= 0:
             log.warning("  [%s] target_qty=0 (alloc=$%.0f, price=$%.2f). Skipping.",
@@ -785,9 +808,10 @@ def run_daemon(portfolio_mode: bool = False) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
+    global DRY_RUN
     parser = argparse.ArgumentParser(description="DQN Alpaca Paper Trader")
     parser.add_argument("--portfolio", action="store_true",
-                        help="Trade all Tier 1 stocks with equal-weight allocation")
+                        help="Trade the configured WaveNet clean28 portfolio with equal-weight allocation")
     parser.add_argument("--symbol", type=str, default=None,
                         help="Trade a single stock (overrides --portfolio)")
     parser.add_argument("--daemon", action="store_true", help="Run continuously")
@@ -800,12 +824,9 @@ def main():
         log.error("Set ALPACA_API_KEY and ALPACA_SECRET_KEY environment variables")
         sys.exit(1)
 
-    if args.dry_run:
-        # Override execute_action to no-op
-        global execute_action
-        def execute_action(action_label, symbol, allocation_pct=1.0):
-            log.info("[DRY-RUN] Would execute %s on %s (alloc=%.1f%%)",
-                     action_label, symbol, allocation_pct * 100)
+    DRY_RUN = args.dry_run
+    if DRY_RUN:
+        log.info("Dry-run mode enabled: signals and intended orders will be logged only")
 
     # Single-stock override
     if args.symbol:
