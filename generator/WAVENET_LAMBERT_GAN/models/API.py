@@ -44,7 +44,7 @@ class GeneratorAPI:
     """Inference wrapper for a trained WaveNet Lambert GAN (GRT_GAN-compatible)."""
 
     def __init__(self, model_path, ticker_name, obs_features, temporal_features,
-                 feature_method="derived", data_dir=None, checkpoint_epoch=None,
+                 feature_method=None, data_dir=None, checkpoint_epoch=None,
                  real_correlation=False):
         """Load the model and NPY data for inference.
 
@@ -58,10 +58,15 @@ class GeneratorAPI:
             Feature column names expected by the downstream DQN.
         temporal_features : list[str]
             Temporal feature names (passed through, not generated).
-        feature_method : str
-            'derived' (default, recursive compounding from initial close,
-            matches the preprocessing notebook and GRT_GAN's API default) or
-            'log_returns' (independent per-channel exp-cumsum).
+        feature_method : str or None
+            'derived' (recursive compounding from initial close, matches the
+            preprocessing notebook and GRT_GAN's API default) or 'log_returns'
+            (independent per-channel exp-cumsum). If None (recommended), the
+            method is auto-selected from the data dir: log-return builds write
+            output_initial_{high,low,volume}.npy, derived builds do not. An
+            explicit value that disagrees with the data dir is overridden (with
+            a warning) so a mis-pointed GAN config cannot silently corrupt the
+            reconstruction.
         data_dir : str or None
             Path to the preprocessed NPY data folder. If omitted, uses the
             model config's data_dir when present, then falls back to the legacy
@@ -76,7 +81,7 @@ class GeneratorAPI:
             the legacy processor self-correlation == 1.0 so generated features
             stay on the same manifold as Dow checkpoints.
         """
-        self.feature_method = feature_method
+        self._feature_method_hint = feature_method
         self.real_correlation = real_correlation
         self.ticker_name = ticker_name
         self.obs_features = obs_features
@@ -121,7 +126,39 @@ class GeneratorAPI:
         self.original_open = np.load(os.path.join(data_dir, 'output_original_open.npy'))
         self.output_adj_factor = np.load(os.path.join(data_dir, 'output_adj_factor.npy'))
 
-        if feature_method == "log_returns":
+        # -- Auto-select feature_method / normalization_method from the data dir --
+        # The preprocessed data dir is authoritative for how the GAN's outputs
+        # must be reconstructed. Log-return builds write
+        # output_initial_{high,low,volume}.npy; derived builds do not. This
+        # guards against an upstream config pointing the wrong GAN at a data dir
+        # (e.g. a log-return ETF GAN loaded with the derived default).
+        _has_initials = all(
+            os.path.exists(os.path.join(data_dir, f'output_initial_{_k}.npy'))
+            for _k in ('high', 'low', 'volume'))
+        detected_feature_method = 'log_returns' if _has_initials else 'derived'
+        if self._feature_method_hint is None:
+            self.feature_method = detected_feature_method
+        elif self._feature_method_hint != detected_feature_method:
+            warnings.warn(
+                f"feature_method={self._feature_method_hint!r} was requested but "
+                f"data_dir {self.data_dir!r} looks like {detected_feature_method!r} "
+                f"(output_initial_*.npy {'present' if _has_initials else 'absent'}). "
+                f"Using {detected_feature_method!r} to match the data on disk.",
+                stacklevel=2)
+            self.feature_method = detected_feature_method
+        else:
+            self.feature_method = self._feature_method_hint
+
+        # Lambert builds store RAW Lambert ~N(0,1) features (the notebook's
+        # lambert branch does NOT history-z-score the window); legacy GRT_GAN
+        # builds store history-z-scored features. config.pkl wins if it records
+        # the method, else we infer it from the presence of lambert_fit_params.
+        _has_lambert = os.path.exists(os.path.join(data_dir, 'lambert_fit_params.pkl'))
+        self.normalization_method = (
+            self.config.get('normalization_method')
+            or ('lambert' if _has_lambert else 'zscore'))
+
+        if self.feature_method == "log_returns":
             self.original_high = np.load(os.path.join(data_dir, 'output_initial_high.npy'))
             self.original_low = np.load(os.path.join(data_dir, 'output_initial_low.npy'))
             self.original_volume = np.load(os.path.join(data_dir, 'output_initial_volume.npy'))
@@ -268,11 +305,20 @@ class GeneratorAPI:
         """Reconstruct OHLCV from log-return PV features (independent channels)."""
         lr = df_features.values if isinstance(df_features, pd.DataFrame) else np.asarray(df_features)
 
-        close = initial_close * np.exp(np.cumsum(lr[:, 0]))
-        open_ = initial_open * np.exp(np.cumsum(lr[:, 1]))
-        high = initial_high * np.exp(np.cumsum(lr[:, 2]))
-        low = initial_low * np.exp(np.cumsum(lr[:, 3]))
-        volume = initial_volume * np.exp(np.cumsum(lr[:, 4]))
+        # Match the build-side revert_log_returns_to_data exactly: anchor the
+        # first bar at the initial value (leading 0) and drop the final return
+        # (which is a shift(-1) ffill pad in the training data). Using a plain
+        # cumsum over all rows would phase-shift the path one bar forward and
+        # fabricate an extra step at the tail.
+        def _recon(col, init):
+            cum = np.concatenate([[0.0], np.cumsum(lr[:-1, col])])
+            return init * np.exp(cum)
+
+        close = _recon(0, initial_close)
+        open_ = _recon(1, initial_open)
+        high = _recon(2, initial_high)
+        low = _recon(3, initial_low)
+        volume = _recon(4, initial_volume)
 
         # OHLC bar validity clamp
         max_oc = np.maximum(open_, close)
@@ -536,9 +582,20 @@ class GeneratorAPI:
         pv_raw = generated_all[:, ticker_index * 5:(ticker_index + 1) * 5]
         history_ticker = history_data[:, ticker_index * 5:(ticker_index + 1) * 5]
 
-        h_mean = history_ticker.mean(axis=0)
-        h_std = history_ticker.std(axis=0)
-        pv_denorm = (pv_raw * h_std) + h_mean
+        if self.normalization_method == "lambert":
+            # output_data was stored as RAW Lambert ~N(0,1) (no per-window
+            # history z-scoring), and the GAN was trained in that same space,
+            # so its output feeds the Lambert inverse directly. Applying the
+            # legacy history z-score denorm here would distort the Lambert-space
+            # values before the inverse re-introduces the tails.
+            pv_denorm = pv_raw
+        else:
+            # Legacy GRT_GAN convention: features were history z-scored at build
+            # time, so undo that here before any further inverse.
+            h_mean = history_ticker.mean(axis=0)
+            h_std = history_ticker.std(axis=0)
+            h_std = np.where(h_std < 1e-8, 1.0, h_std)
+            pv_denorm = (pv_raw * h_std) + h_mean
 
         pv_original = self._inverse_lambert_per_feature(pv_denorm, self.ticker_name)
         pv_df = pd.DataFrame(pv_original)

@@ -366,7 +366,12 @@ def main():
         # ETF retrain branch: real price-volume correlation + log_returns
         # feature reconstruction. Defaults preserve legacy Dow behaviour.
         real_correlation = getattr(cfg, 'gan_real_correlation', False)
-        feature_method = getattr(cfg, 'gan_feature_method', 'derived')
+        # Default None -> the WaveNet Lambert API autoselects derived vs
+        # log_returns from the data dir (presence of output_initial_*.npy),
+        # so a mis-pointed GAN config can't silently reconstruct with the
+        # wrong convention. The legacy GRT_GAN backend has no autoselect, so
+        # it keeps the historical 'derived' default below.
+        feature_method = getattr(cfg, 'gan_feature_method', None)
         checkpoint_epoch = getattr(cfg, 'gan_checkpoint_epoch', None)
         if 'GRT_GAN' in model_path:
             from generator.GRT_GAN.models.API import GeneratorAPI
@@ -380,7 +385,7 @@ def main():
         if data_path is not None:
             print(f"GAN data path: {data_path}")
         print(f"Generator backend: {generator_backend}")
-        print(f"GAN feature_method: {feature_method}, "
+        print(f"GAN feature_method: {feature_method if feature_method is not None else 'auto'}, "
               f"real_correlation: {real_correlation}, "
               f"checkpoint_epoch: {checkpoint_epoch}")
         print(f"Using CUDA: {torch.cuda.is_available()}")
@@ -389,7 +394,8 @@ def main():
             ticker_name=ticker_name,
             obs_features=cfg.dataset.features_name,
             temporal_features=cfg.dataset.temporals_name,
-            feature_method=feature_method,
+            feature_method=(feature_method if generator_backend == 'WAVENET_LAMBERT_GAN'
+                            else (feature_method or 'derived')),
             real_correlation=real_correlation,
         )
         if generator_backend == 'GRT_GAN' and data_path is not None:
