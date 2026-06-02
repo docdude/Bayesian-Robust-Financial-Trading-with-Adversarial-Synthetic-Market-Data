@@ -26,7 +26,7 @@ GAN_MODEL_PATH = "generator/WAVENET_LAMBERT_GAN/output/futures_etf_lambert_deriv
 GAN_DATA_PATH = "datasets/output_data_lambert_future_etfs_derived"
 GAN_FEATURE_METHOD = "derived"   # API also autoselects from the data dir
 GAN_REAL_CORRELATION = True
-GAN_CHECKPOINT_EPOCH = 4000
+GAN_CHECKPOINT_EPOCH = 3600
 REAL_PARQUET_TMPL = "datasets/processd_day_future_etfs/features/{ticker}.parquet"
 TEMPORALS = ['day', 'weekday', 'month']
 

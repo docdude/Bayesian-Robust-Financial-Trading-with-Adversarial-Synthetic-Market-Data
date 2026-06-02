@@ -1,6 +1,6 @@
 root = None
 workdir = "downstream_tasks/rl/trading/workdir/exp/trading/UGA/dqn"
-tag = "aug_wavenet_gen_adv"
+tag = "aug_wavenet_gen_adv_derived"
 save_path = "saved_model"
 level = "day"
 select_stock = "UGA"
@@ -46,7 +46,7 @@ gan_model_path = "generator/WAVENET_LAMBERT_GAN/output/futures_etf_lambert_deriv
 gan_data_path = "datasets/output_data_lambert_future_etfs_derived"
 gan_feature_method = "derived"
 gan_real_correlation = True
-gan_checkpoint_epoch = 4000
+gan_checkpoint_epoch = 3600
 augmentation_method = 'generator_adv_agent'   # ['random', 'min_q', 'adv_agent', 'generator_noise', 'generator_adv_agent']
 augmentation_rate = 0.1
 epsilon = 0.1
@@ -54,6 +54,16 @@ iterations = 2
 alpha = 0.05
 adv_training_length = 100
 adv_policy_learning_rate = 2.5e-4
+# Stabilization patch (empirically grounded in the exp001 TensorBoard logs):
+# losses/adv_obs_loss showed +-100..500 spikes with its mean growing 0.6->20.5
+# while td_loss stayed ~8e-4 and q_values deflated 6.1->0.95 — i.e. the
+# adversary's unnormalized REINFORCE .sum() (over adv_training_length*num_envs
+# terms, with no gradient clip) is the sole instability source. These two flags
+# (handled in train.py) normalize that loss to a per-active-term mean and clip
+# the adversary gradient norm, leaving adv LR at the canonical 2.5e-4 so the
+# stabilization patch is the only changed variable vs exp001.
+adv_loss_normalize = True
+adv_grad_clip = 1.0
 
 # NFSP
 use_nfsp = True
