@@ -128,7 +128,9 @@ def data_augmentation_function(data: np.ndarray, cfg,
         num_envs = data.shape[0]
         macro_dim = getattr(generator, "macro_dim", 46)
         noise = np.random.normal(loc=0.0, scale=1, size=(num_envs, macro_dim))
-        macro_epsilon = epsilon * noise
+        # Canonical feeds the raw macro perturbation to the generator on this
+        # path; epsilon is only consumed by the random/min_q/adv_agent methods.
+        macro_epsilon = noise
         if hasattr(generator, "call_batch"):
             generated_batch = generator.call_batch(timestamp, macro_epsilon)
         else:
@@ -139,7 +141,12 @@ def data_augmentation_function(data: np.ndarray, cfg,
         data_tensor = torch.Tensor(data).to(device)
         noise = adv_agent(data_tensor).detach().cpu().numpy()
         noise_output = noise.copy()
-        macro_epsilon = epsilon * noise
+        if '0.3' in cfg.tag:
+            noise = noise * 0.3
+        # Canonical feeds the raw adversary macro perturbation to the generator
+        # (no epsilon scaling on this path; epsilon is only used by the
+        # random/min_q/adv_agent methods).
+        macro_epsilon = noise
         # generate new_obs with generator for each env
         num_envs = data.shape[0]
         if hasattr(generator, "call_batch"):
@@ -525,8 +532,18 @@ def main():
                 values_tensor = torch.tensor(values_b).to(device)
                 masks_tensor = torch.tensor(masks_b).to(device)
                 loss_obs_adv = (-log_probs_obs_adv * values_tensor * masks_tensor).sum()
+                # Stabilization (opt-in): the REINFORCE adversary loss above is an
+                # unnormalized sum over adv_training_length*num_envs terms; with
+                # z-scored values it grows unbounded as the adversary's log-probs
+                # grow, driving the +-100..500 adv_obs_loss spikes and q_value
+                # deflation seen in TensorBoard. Normalize to a mean over active
+                # (masked) terms when enabled.
+                if getattr(cfg, 'adv_loss_normalize', False):
+                    loss_obs_adv = loss_obs_adv / masks_tensor.sum().clamp(min=1.0)
                 adv_agent_optimizer.zero_grad()
                 loss_obs_adv.backward()
+                if getattr(cfg, 'adv_grad_clip', 0):
+                    torch.nn.utils.clip_grad_norm_(adv_agent.parameters(), cfg.adv_grad_clip)
                 adv_agent_optimizer.step()
                 writer.add_scalar("losses/adv_obs_loss", loss_obs_adv.item(), global_step)
                 

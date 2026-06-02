@@ -175,9 +175,14 @@ class GeneratorAPI:
             raise ValueError(
                 f"Data macro_dim={self.output_macro_data.shape[2]} but model expects {self.macro_dim}"
             )
-        if self.latent_dim != self.feature_dim:
+        # Half-real latent slices the first ``latent_dim`` channels of the real
+        # window (z = concat[real[:, :half, :latent_dim], noise]), exactly like
+        # 09_evaluation.ipynb. latent_dim < feature_dim is therefore valid (e.g.
+        # dj30_v6: latent_dim=125, feature_dim=140); only latent_dim > feature_dim
+        # is invalid because the slice would be out of range.
+        if self.latent_dim > self.feature_dim:
             raise ValueError(
-                f"Model latent_dim={self.latent_dim} must equal feature_dim={self.feature_dim} "
+                f"Model latent_dim={self.latent_dim} cannot exceed feature_dim={self.feature_dim} "
                 "for half-real WaveNet API inference."
             )
         if self.ticker_name not in set(self.ticker_list.astype(str)):

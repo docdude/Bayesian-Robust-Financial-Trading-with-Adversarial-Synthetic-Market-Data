@@ -1,9 +1,9 @@
 root = None
-workdir = "downstream_tasks/rl/trading/workdir/exp/trading/FXA/dqn"
-tag = "aug_wavenet_gen_adv"
+workdir = "downstream_tasks/rl/trading/workdir/exp/trading/CORN/dqn"
+tag = "noaug_baseline"
 save_path = "saved_model"
 level = "day"
-select_stock = "FXA"
+select_stock = "CORN"
 
 train_start_date = "2010-06-09"
 train_end_date = "2019-12-31"
@@ -38,7 +38,7 @@ tau = 1.0
 seed = 10
 
 # data augmentation
-use_data_augmentation = True
+use_data_augmentation = False
 # ETF retrain branch: point at the ETF-trained WaveNet Lambert GAN and use the
 # real price-volume correlation + derived feature reconstruction so the
 # generated augmentation matches the regenerated ETF parquet feature semantics.
@@ -56,11 +56,11 @@ adv_training_length = 100
 adv_policy_learning_rate = 2.5e-4
 
 # NFSP
-use_nfsp = True
+use_nfsp = False
 nfsp_tau = 0.1
 
 # quantile belief
-use_quantile_belief = True
+use_quantile_belief = False
 quantile_heads = [0.05, 0.25, 0.5, 0.75, 0.95]
 
 transition = ["states", "actions", "rewards", "dones", "next_states"]

@@ -41,6 +41,11 @@ seed = 10
 # data augmentation (GAN adversarial agent)
 use_data_augmentation = True
 gan_model_path = "generator/WAVENET_LAMBERT_GAN/output/dj30_v6"
+# WaveNet Lambert derived Dow model: pin reconstruction convention explicitly
+# (derived feature_method, no real price-volume correlation) so the fixed API
+# does not rely on autoselect/defaults.
+gan_feature_method = 'derived'
+gan_real_correlation = False
 augmentation_method = 'generator_adv_agent'
 augmentation_rate = 0.1
 epsilon = 0.1

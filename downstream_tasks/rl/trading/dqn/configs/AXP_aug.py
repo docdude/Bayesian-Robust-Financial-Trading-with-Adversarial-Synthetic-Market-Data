@@ -1,6 +1,6 @@
 root = None
 workdir = "downstream_tasks/rl/trading/workdir/exp/trading/AXP/dqn"
-tag = "exp001_aug"
+tag = "exp002_aug_derived_no_corr_stab"
 save_path = "saved_model"
 level = "day"
 select_stock = "AXP"
@@ -41,6 +41,11 @@ seed = 10
 # data augmentation (GAN adversarial agent)
 use_data_augmentation = True
 gan_model_path = "generator/WAVENET_LAMBERT_GAN/output/dj30_v6"
+# WaveNet Lambert derived Dow model: pin reconstruction convention explicitly
+# (derived feature_method, no real price-volume correlation) so the fixed API
+# does not rely on autoselect/defaults.
+gan_feature_method = 'derived'
+gan_real_correlation = False
 augmentation_method = 'generator_adv_agent'
 augmentation_rate = 0.1
 epsilon = 0.1
@@ -48,6 +53,16 @@ iterations = 2
 alpha = 0.05
 adv_training_length = 100
 adv_policy_learning_rate = 2.5e-4
+# Stabilization patch (empirically grounded in the exp001 TensorBoard logs):
+# losses/adv_obs_loss showed +-100..500 spikes with its mean growing 0.6->20.5
+# while td_loss stayed ~8e-4 and q_values deflated 6.1->0.95 — i.e. the
+# adversary's unnormalized REINFORCE .sum() (over adv_training_length*num_envs
+# terms, with no gradient clip) is the sole instability source. These two flags
+# (handled in train.py) normalize that loss to a per-active-term mean and clip
+# the adversary gradient norm, leaving adv LR at the canonical 2.5e-4 so the
+# stabilization patch is the only changed variable vs exp001.
+adv_loss_normalize = True
+adv_grad_clip = 1.0
 
 # NFSP
 use_nfsp = True

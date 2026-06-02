@@ -5,7 +5,7 @@ save_path = "saved_model"
 level = "day"
 select_stock = "DBB"
 
-train_start_date = "2000-01-01"
+train_start_date = "2010-06-09"
 train_end_date = "2017-12-31"
 valid_start_date = "2018-01-01"
 valid_end_date = "2020-12-31"
@@ -40,11 +40,11 @@ seed = 10
 # data augmentation
 use_data_augmentation = True
 # ETF retrain branch: point at the ETF-trained WaveNet Lambert GAN and use the
-# real price-volume correlation + log_returns feature reconstruction so the
+# real price-volume correlation + derived feature reconstruction so the
 # generated augmentation matches the regenerated ETF parquet feature semantics.
-gan_model_path = "generator/WAVENET_LAMBERT_GAN/output/futures_etf_lambert"
-gan_data_path = "datasets/output_data_lambert_future_etfs"
-gan_feature_method = "log_returns"
+gan_model_path = "generator/WAVENET_LAMBERT_GAN/output/futures_etf_lambert_derived"
+gan_data_path = "datasets/output_data_lambert_future_etfs_derived"
+gan_feature_method = "derived"
 gan_real_correlation = True
 gan_checkpoint_epoch = 4000
 augmentation_method = 'generator_adv_agent'   # ['random', 'min_q', 'adv_agent', 'generator_noise', 'generator_adv_agent']
