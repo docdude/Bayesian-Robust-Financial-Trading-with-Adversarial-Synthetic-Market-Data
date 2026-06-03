@@ -64,6 +64,12 @@ adv_policy_learning_rate = 2.5e-4
 # stabilization patch is the only changed variable vs exp001.
 adv_loss_normalize = True
 adv_grad_clip = 1.0
+# Adversary entropy bonus (opt-in): counters the policy-entropy collapse seen in
+# the DBB exp logs (adv_obs_loss magnitude creeping up while q_values deflate
+# monotonically). The bonus is summed over (timestamps*macro_dim)=30*46~=1380
+# Gaussian dims, so mean_entropy is O(1e3); a coef of ~1e-4..1e-3 makes the term
+# comparable to the normalized REINFORCE loss (O(0.4)). 0.0 disables it.
+adv_entropy_coef = 0.0
 
 # NFSP
 use_nfsp = True

@@ -109,7 +109,7 @@ class ActorContinuous(nn.Module):
         action = action.reshape(*x_shape[:-2], *action.shape[-2:])
         return action
     
-    def evaluate_actions(self, x, actions):
+    def evaluate_actions(self, x, actions, return_entropy=False):
         if isinstance(x, np.ndarray):
             x = torch.tensor(x).to(self.device)
         if isinstance(actions, np.ndarray):
@@ -133,5 +133,14 @@ class ActorContinuous(nn.Module):
         dist = Normal(mean, std)
         log_prob = dist.log_prob(actions) - torch.log(1 - torch.tanh(actions).pow(2) + 1e-6)
         log_prob = log_prob.reshape(*x_shape[:-2], *log_prob.shape[-2:])
-        
-        return log_prob.sum(dim=-1).sum(dim=-1)
+        log_prob = log_prob.sum(dim=-1).sum(dim=-1)
+
+        if return_entropy:
+            # Entropy of the pre-tanh Gaussian policy, reduced over the
+            # (timestamps, action_dim) axes to match log_prob's
+            # (adv_training_length, num_envs) shape so it aligns with masks_b.
+            entropy = dist.entropy().reshape(*x_shape[:-2], *mean.shape[-2:])
+            entropy = entropy.sum(dim=-1).sum(dim=-1)
+            return log_prob, entropy
+
+        return log_prob

@@ -528,7 +528,12 @@ def main():
                 and (global_step + 1) % cfg.adv_training_length == 0:
                 compute_values(dones_b=dones_b, masks_b=masks_b, 
                                values_b=values_b, rewards_b=rewards_b, gamma=cfg.gamma)
-                log_probs_obs_adv = adv_agent.evaluate_actions(obs_b, adv_obs_b)
+                adv_entropy_coef = getattr(cfg, 'adv_entropy_coef', 0.0)
+                if adv_entropy_coef:
+                    log_probs_obs_adv, entropy_obs_adv = adv_agent.evaluate_actions(
+                        obs_b, adv_obs_b, return_entropy=True)
+                else:
+                    log_probs_obs_adv = adv_agent.evaluate_actions(obs_b, adv_obs_b)
                 values_tensor = torch.tensor(values_b).to(device)
                 masks_tensor = torch.tensor(masks_b).to(device)
                 loss_obs_adv = (-log_probs_obs_adv * values_tensor * masks_tensor).sum()
@@ -540,6 +545,15 @@ def main():
                 # (masked) terms when enabled.
                 if getattr(cfg, 'adv_loss_normalize', False):
                     loss_obs_adv = loss_obs_adv / masks_tensor.sum().clamp(min=1.0)
+                # Entropy bonus (opt-in): the adversary's policy entropy collapses
+                # over training (loss magnitude creeps up, q_values deflate
+                # monotonically). Subtracting a mean-entropy term keeps the
+                # adversary exploratory and the loss stationary.
+                if adv_entropy_coef:
+                    mean_entropy = (entropy_obs_adv * masks_tensor).sum() \
+                        / masks_tensor.sum().clamp(min=1.0)
+                    loss_obs_adv = loss_obs_adv - adv_entropy_coef * mean_entropy
+                    writer.add_scalar("losses/adv_entropy", mean_entropy.item(), global_step)
                 adv_agent_optimizer.zero_grad()
                 loss_obs_adv.backward()
                 if getattr(cfg, 'adv_grad_clip', 0):
