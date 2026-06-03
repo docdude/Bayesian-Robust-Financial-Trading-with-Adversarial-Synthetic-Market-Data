@@ -1,6 +1,6 @@
 root = None
 workdir = "downstream_tasks/rl/trading/workdir/exp/trading/FXC/dqn"
-tag = "aug_wavenet_gen_adv_derived"
+tag = "aug_wavenet_gen_adv_derived_entropy"
 save_path = "saved_model"
 level = "day"
 select_stock = "FXC"
@@ -53,7 +53,7 @@ epsilon = 0.1
 iterations = 2
 alpha = 0.05
 adv_training_length = 100
-adv_policy_learning_rate = 2.5e-4
+adv_policy_learning_rate = 1e-4
 # Stabilization patch (empirically grounded in the exp001 TensorBoard logs):
 # losses/adv_obs_loss showed +-100..500 spikes with its mean growing 0.6->20.5
 # while td_loss stayed ~8e-4 and q_values deflated 6.1->0.95 — i.e. the
@@ -69,7 +69,7 @@ adv_grad_clip = 1.0
 # monotonically). The bonus is summed over (timestamps*macro_dim)=30*46~=1380
 # Gaussian dims, so mean_entropy is O(1e3); a coef of ~1e-4..1e-3 makes the term
 # comparable to the normalized REINFORCE loss (O(0.4)). 0.0 disables it.
-adv_entropy_coef = 0.0
+adv_entropy_coef = 2e-4
 
 # NFSP
 use_nfsp = True
